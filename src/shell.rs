@@ -285,6 +285,7 @@ impl App {
         let Some(view) = self.latest.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() else { return };
         self.view = view.clone();
         self.ui.set_view(view);
+        self.update_energy();
         self.update_tray(false);
         if self.announce {
             match self.view["account"].as_str() {
@@ -299,6 +300,19 @@ impl App {
             }
         }
         self.invalidate();
+    }
+
+    /// This month's use comes from the lifetime counter, so each reading updates the month record.
+    fn update_energy(&mut self) {
+        let device = &self.view["device"];
+        let month = match (device["id"].as_str(), device["energia"].as_f64()) {
+            (Some(id), Some(total)) if !self.demo => {
+                let used = settings::track_month(&self.settings_file, id, total, platform::today());
+                Some((used.kwh, used.since))
+            }
+            _ => None,
+        };
+        self.ui.set_energy(settings::tariff(&self.settings_file), month);
     }
 
     fn invalidate(&self) {
@@ -385,6 +399,7 @@ impl App {
                 Action::Refresh => self.bridge.refresh(),
                 Action::Hide => self.hide(),
                 Action::Autostart(enabled) => settings::set_autostart(&self.settings_file, enabled, self.demo),
+                Action::Tariff(price) => settings::set_tariff(&self.settings_file, price),
                 Action::Login => self.bridge.login(),
                 Action::ReopenLogin => self.bridge.reopen_login(),
                 Action::CancelLogin => self.bridge.cancel_login(),

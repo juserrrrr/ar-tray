@@ -60,7 +60,7 @@ Para gerar o exe de uma release sem caminhos da máquina dentro dele, rode `powe
 - **WindFree, Sono e Turbo**: ligam e desligam direto. O Turbo é o resfriamento rápido da Samsung: roda por um tempo e volta sozinho para o ajuste anterior, sem mudar temperatura nem vento. Enquanto ele roda, o aparelho trava a temperatura e o vento, e o painel deixa esses controles apagados. Os três ficam apagados nos aparelhos que não têm.
 - **Ajustes** (canto de baixo): luz do display, bipe, secagem automática, filtro, consumo, abrir com o Windows, trocar de aparelho e sair da conta Samsung.
 
-O consumo não é ao vivo: o ar manda a potência à SmartThings a cada 5 minutos, então os ajustes mostram há quanto tempo ela foi medida.
+Em **Ajustes > Consumo** aparecem a potência agora, o gasto do mês e o total do aparelho, em kWh e em reais. Os reais são estimados com o preço do kWh que você ajusta ali, pela conta de luz. A potência não é ao vivo: o ar manda a leitura à SmartThings a cada 5 minutos. A SmartThings só informa o total do aparelho, então o app guarda a leitura do começo de cada mês; no primeiro mês, a conta começa no dia em que o app viu a primeira leitura.
 
 O painel segue o tema claro ou escuro do Windows. Quando o Windows inicia o app, ele fica só no ícone, sem abrir o painel.
 
@@ -77,7 +77,7 @@ Tudo fica em `%APPDATA%\dev.ar-tray.desktop`:
   { "id": "ID-DO-APARELHO", "nome": "Ar da sala" }
   ```
 
-- `settings.json`: se o app abre com o Windows.
+- `settings.json`: se o app abre com o Windows, o preço do kWh e a leitura de energia do começo do mês.
 - `log.txt`: os passos do login e qualquer falha, com a linha do código quando o `.pdb` está ao lado do exe.
 
 ## Como funciona

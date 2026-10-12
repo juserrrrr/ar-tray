@@ -11,6 +11,7 @@ use windows_sys::Win32::Security::Cryptography::{
 use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
+use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -39,6 +40,13 @@ pub fn taskbar_is_dark() -> bool {
         )
     };
     status != ERROR_SUCCESS || light == 0
+}
+
+/// Today's local date as (year, month, day).
+pub fn today() -> (u16, u16, u16) {
+    let mut now = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut now) };
+    (now.wYear, now.wMonth, now.wDay)
 }
 
 /// The apps theme, which the panel follows.

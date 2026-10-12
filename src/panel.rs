@@ -105,6 +105,8 @@ const SECONDARY_LEFT: (f32, f32, f32, f32) = (14.0, 404.0, 168.0, 46.0);
 const SECONDARY_RIGHT: (f32, f32, f32, f32) = (190.0, 404.0, 168.0, 46.0);
 const SECONDARY_WIDE: (f32, f32, f32, f32) = (14.0, 404.0, 344.0, 46.0);
 const DEVICE_ROWS: usize = 4;
+const TARIFF_DOWN: (f32, f32) = (256.0, 333.0);
+const TARIFF_UP: (f32, f32) = (338.0, 333.0);
 
 struct Choice {
     value: &'static str,
@@ -187,6 +189,7 @@ impl Menu {
 enum Screen {
     Main,
     Settings,
+    Energy,
     SignIn,
     Waiting,
     Choose,
@@ -207,6 +210,9 @@ enum Hit {
     Toggle(usize),
     ChangeDevice,
     Logout,
+    OpenEnergy,
+    TariffDown,
+    TariffUp,
     Item(usize),
     Primary,
     Reopen,
@@ -221,6 +227,7 @@ pub enum Action {
     Refresh,
     Hide,
     Autostart(bool),
+    Tariff(f64),
     Login,
     ReopenLogin,
     CancelLogin,
@@ -366,6 +373,22 @@ fn tile_rect(index: usize) -> (f32, f32, f32, f32) {
     }
 }
 
+/// A pt-BR number with `places` decimals, as in 1.234,5.
+fn decimal(value: f64, places: usize) -> String {
+    let scale = 10f64.powi(places as i32);
+    let scaled = (value.abs() * scale).round() as i64;
+    let whole = thousands(scaled / scale as i64);
+    let sign = if value < 0.0 && scaled != 0 { "-" } else { "" };
+    if places == 0 {
+        return format!("{sign}{whole}");
+    }
+    format!("{sign}{whole},{:0places$}", scaled % scale as i64)
+}
+
+fn money(value: f64) -> String {
+    format!("R$ {}", decimal(value, 2))
+}
+
 /// Seconds since 1970 for an ISO 8601 UTC time such as 2026-10-12T00:24:03Z.
 fn epoch_seconds(iso: &str) -> Option<i64> {
     let number = |range: std::ops::Range<usize>| iso.get(range)?.parse::<i64>().ok();
@@ -386,8 +409,8 @@ fn settings_row(index: usize) -> (f32, f32, f32, f32) {
     let y = match index {
         0..=2 => 68.0 + index as f32 * ROW_HEIGHT,
         3 | 4 => 246.0 + (index - 3) as f32 * ROW_HEIGHT,
-        5 => 388.0,
-        _ => 458.0 + (index - 6) as f32 * ROW_HEIGHT,
+        5 => 370.0,
+        _ => 440.0 + (index - 6) as f32 * ROW_HEIGHT,
     };
     (14.0, y, 344.0, ROW_HEIGHT)
 }
@@ -404,6 +427,11 @@ pub struct Panel {
     pressed: Option<Hit>,
     menu: Option<Menu>,
     settings: bool,
+    /// The Consumo page, opened from the settings.
+    energy: bool,
+    tariff: f64,
+    /// This month's kWh and the day counting started, when known.
+    month: Option<(f64, String)>,
     drag: Option<i64>,
     power: Ease,
     // The air direction, strength and pace glide to new settings instead of jumping.
@@ -432,6 +460,9 @@ impl Panel {
             pressed: None,
             menu: None,
             settings: false,
+            energy: false,
+            tariff: 0.9,
+            month: None,
             drag: None,
             power: Ease { value: 0.0, target: 0.0 },
             air_pitch: Ease { value: scene::PITCH_REST, target: scene::PITCH_REST },
@@ -461,6 +492,7 @@ impl Panel {
         }
         if self.account_screen().is_some() {
             self.settings = false;
+            self.energy = false;
         }
         self.dirty = true;
     }
@@ -481,6 +513,7 @@ impl Panel {
     pub fn hidden(&mut self) {
         self.menu = None;
         self.settings = false;
+        self.energy = false;
         self.hover = None;
         self.pressed = None;
         self.drag = None;
@@ -528,7 +561,22 @@ impl Panel {
     }
 
     fn screen(&self) -> Screen {
-        self.account_screen().unwrap_or(if self.settings { Screen::Settings } else { Screen::Main })
+        let page = if self.energy {
+            Screen::Energy
+        } else if self.settings {
+            Screen::Settings
+        } else {
+            Screen::Main
+        };
+        self.account_screen().unwrap_or(page)
+    }
+
+    pub fn set_energy(&mut self, tariff: f64, month: Option<(f64, String)>) {
+        if tariff != self.tariff || month != self.month {
+            self.tariff = tariff;
+            self.month = month;
+            self.dirty = true;
+        }
     }
 
     fn device(&self) -> Option<&Map<String, Value>> {
@@ -680,6 +728,7 @@ impl Panel {
             Screen::Choose => (0..self.devices().len()).find(|&index| inside(x, y, device_row(index))).map(Hit::Device),
             Screen::NoDevice => [(PRIMARY, Hit::Primary), (SECONDARY_WIDE, Hit::OtherAccount)].into_iter().find(|(rect, _)| inside(x, y, *rect)).map(|(_, hit)| hit),
             Screen::Settings => self.settings_hit(x, y),
+            Screen::Energy => self.energy_hit(x, y),
             Screen::Main => self.main_hit(x, y),
         }
     }
@@ -691,10 +740,20 @@ impl Panel {
         if let Some(index) = [0, 1, 2, 5].into_iter().position(|row| inside(x, y, settings_row(row))) {
             return Some(Hit::Toggle(index));
         }
+        if inside(x, y, settings_row(4)) {
+            return Some(Hit::OpenEnergy);
+        }
         if self.account() == "demo" {
             return None;
         }
         [(6, Hit::ChangeDevice), (7, Hit::Logout)].into_iter().find(|(row, _)| inside(x, y, settings_row(*row))).map(|(_, hit)| hit)
+    }
+
+    fn energy_hit(&self, x: f32, y: f32) -> Option<Hit> {
+        [(BACK_BUTTON, 20.0, Hit::Back), (TARIFF_DOWN, 16.0, Hit::TariffDown), (TARIFF_UP, 16.0, Hit::TariffUp)]
+            .into_iter()
+            .find(|(center, radius, _)| inside_circle(x, y, *center, *radius))
+            .map(|(_, _, hit)| hit)
     }
 
     fn main_hit(&self, x: f32, y: f32) -> Option<Hit> {
@@ -820,8 +879,21 @@ impl Panel {
                 return Vec::new();
             }
             Hit::Back => {
-                self.settings = false;
+                if self.energy {
+                    self.energy = false;
+                } else {
+                    self.settings = false;
+                }
                 return Vec::new();
+            }
+            Hit::OpenEnergy => {
+                self.energy = true;
+                return Vec::new();
+            }
+            Hit::TariffDown | Hit::TariffUp => {
+                let step = if hit == Hit::TariffUp { 0.01 } else { -0.01 };
+                self.tariff = ((self.tariff + step) * 100.0).round().clamp(10.0, 500.0) / 100.0;
+                Action::Tariff(self.tariff)
             }
             Hit::Retry => Action::Refresh,
             Hit::Toggle(3) => {
@@ -834,10 +906,12 @@ impl Panel {
             }
             Hit::ChangeDevice => {
                 self.settings = false;
+                self.energy = false;
                 Action::ChangeDevice
             }
             Hit::Logout => {
                 self.settings = false;
+                self.energy = false;
                 Action::Logout
             }
             // "Procurar de novo" on the empty account looks for devices again.
@@ -860,11 +934,12 @@ impl Panel {
         if self.menu.take().is_some() {
             return Vec::new();
         }
-        if self.screen() == Screen::Settings {
-            self.settings = false;
-            return Vec::new();
+        match self.screen() {
+            Screen::Energy => self.energy = false,
+            Screen::Settings => self.settings = false,
+            _ => return vec![Action::Hide],
         }
-        vec![Action::Hide]
+        Vec::new()
     }
 
     pub fn nudge(&mut self, step: i64) -> Vec<Action> {
@@ -943,6 +1018,7 @@ impl Panel {
                 match screen {
                     Screen::Main => self.draw_main(&mut canvas),
                     Screen::Settings => self.draw_settings(&mut canvas),
+                    Screen::Energy => self.draw_energy(&mut canvas),
                     _ => self.draw_connect(&mut canvas, screen),
                 }
                 base
@@ -1292,22 +1368,22 @@ impl Panel {
             canvas.fill(&rounded(x + 46.0, cy + 15.0, filled, 4.0, 2.0), &solid(if alert { p.danger } else { self.tint() }));
         }
 
-        let (x, y, width, height) = settings_row(4);
+        // Energy: a summary that opens the Consumo page.
+        let rect @ (x, y, width, height) = settings_row(4);
         let cy = y + height / 2.0;
+        if self.hovered(Hit::OpenEnergy) {
+            hover_row(canvas, rect);
+        }
         canvas.icon("zap", x + 24.0, cy, 18.0, p.muted);
         canvas.text("Consumo", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
-        let total = self.field("energia").as_f64().map_or_else(|| "-".to_owned(), |kwh| format!("{} kWh no total", thousands(kwh.round() as i64)));
-        // The unit sends power every few minutes, so the reading says how old it is.
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
-        let measured = self.field("potenciaFim").as_str().and_then(epoch_seconds).map(|end| (now - end).max(0) / 60);
-        let energy = match measured {
-            Some(0) => format!("{total} · medido há menos de 1 min"),
-            Some(minutes) => format!("{total} · medido há {minutes} min"),
-            None => total,
+        let spent = self.field("energia").as_f64().map(|kwh| format!("{} no total", money(kwh * self.tariff)));
+        let summary = match (spent, self.field("potencia").as_f64()) {
+            (Some(spent), Some(watts)) => format!("{spent} · {} W agora", watts.round()),
+            (Some(spent), None) => spent,
+            (None, _) => "-".to_owned(),
         };
-        canvas.text(&energy, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
-        canvas.text(&shown(self.field("potencia"), " W"), Style::Semibold, 15.0, x + width - 18.0, cy + 5.0, p.text, Align::Right);
-        canvas.text("O ar envia a potência a cada 5 min, não é ao vivo.", Style::Regular, 11.5, x + 4.0, y + height + 17.0, p.faint, Align::Left);
+        canvas.text(&summary, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+        canvas.icon("chevron-right", x + width - 22.0, cy, 15.0, p.faint);
 
         let rect @ (x, y, width, height) = settings_row(5);
         let cy = y + height / 2.0;
@@ -1334,6 +1410,73 @@ impl Panel {
             canvas.text(title, Style::Regular, 14.0, x + 46.0, cy + 5.0, color, Align::Left);
             canvas.icon("chevron-right", x + width - 22.0, cy, 15.0, p.faint);
         }
+    }
+
+    /// Consumo: the power right now, this month and the total in reais, and the price of a kWh.
+    fn draw_energy(&mut self, canvas: &mut Canvas) {
+        let p = self.palette;
+        self.draw_background(canvas, 0.0);
+        let fonts = fonts();
+        let (bx, by) = BACK_BUTTON;
+        if self.hovered(Hit::Back) {
+            canvas.fill(&circle(bx, by, 18.0), &solid(p.card_hover));
+        }
+        canvas.icon("chevron-left", bx, by, 20.0, p.text);
+        canvas.text("Consumo", Style::Medium, 17.0, 58.0, 31.0, p.text, Align::Left);
+        let name = self.field("nome").as_str().unwrap_or("");
+        canvas.text(&fonts.fit(name, Style::Regular, 12.0, 280.0), Style::Regular, 12.0, 58.0, 47.0, p.muted, Align::Left);
+
+        // Right now: the last power reading and how old it is.
+        canvas.card(14.0, 66.0, 344.0, 104.0, 16.0, p.card, p.line);
+        canvas.icon("zap", 32.0, 92.0, 16.0, self.tint());
+        canvas.text("Agora", Style::Regular, 13.0, 46.0, 96.5, p.muted, Align::Left);
+        let watts = self.field("potencia").as_f64().map_or_else(|| "-".to_owned(), |watts| format!("{} W", thousands(watts.round() as i64)));
+        canvas.text(&watts, Style::Display, 40.0, 30.0, 140.0, p.text, Align::Left);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
+        let measured = match self.field("potenciaFim").as_str().and_then(epoch_seconds).map(|end| (now - end).max(0) / 60) {
+            Some(0) => "Medido há menos de 1 min. O ar envia a cada 5 min.".to_owned(),
+            Some(minutes) => format!("Medido há {minutes} min. O ar envia a cada 5 min."),
+            None => "O ar envia a potência a cada 5 min.".to_owned(),
+        };
+        canvas.text(&measured, Style::Regular, 12.0, 30.0, 159.0, p.muted, Align::Left);
+
+        // Spent: this month and the unit's lifetime, priced at the user's kWh.
+        let (x, y, width) = (14.0, 182.0, 344.0);
+        canvas.card(x, y, width, ROW_HEIGHT * 2.0, 16.0, p.card, p.line);
+        canvas.fill(&rounded(x + 14.0, y + ROW_HEIGHT, width - 28.0, 1.0, 0.5), &solid(p.line));
+        let month_note = match &self.month {
+            Some((kwh, since)) if since.starts_with("01/") => format!("{} kWh", decimal(*kwh, 1)),
+            Some((kwh, since)) => format!("{} kWh desde {since}", decimal(*kwh, 1)),
+            None => "-".to_owned(),
+        };
+        let total = self.field("energia").as_f64();
+        let rows = [
+            ("calendar", "Este mês", month_note, self.month.as_ref().map(|(kwh, _)| money(kwh * self.tariff))),
+            ("air-vent", "Total do aparelho", total.map_or_else(|| "-".to_owned(), |kwh| format!("{} kWh", decimal(kwh, 1))), total.map(|kwh| money(kwh * self.tariff))),
+        ];
+        for (index, (icon, title, note, value)) in rows.into_iter().enumerate() {
+            let cy = y + ROW_HEIGHT * index as f32 + ROW_HEIGHT / 2.0;
+            canvas.icon(icon, x + 24.0, cy, 17.0, p.muted);
+            canvas.text(title, Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+            canvas.text(&note, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+            canvas.text(&value.unwrap_or_else(|| "-".to_owned()), Style::Semibold, 15.0, x + width - 18.0, cy + 5.0, p.text, Align::Right);
+        }
+
+        // The price of a kWh, set from the power bill.
+        let (x, y, width, height) = (14.0, 302.0, 344.0, 62.0);
+        canvas.card(x, y, width, height, 16.0, p.card, p.line);
+        let cy = y + height / 2.0;
+        canvas.icon("receipt", x + 24.0, cy, 17.0, p.muted);
+        canvas.text("Preço do kWh", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+        canvas.text("Confira na conta de luz", Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+        for (hit, center, icon) in [(Hit::TariffDown, TARIFF_DOWN, "minus"), (Hit::TariffUp, TARIFF_UP, "plus")] {
+            canvas.fill(&circle(center.0, center.1, 14.0), &solid(if self.hovered(hit) { p.card_hover } else { p.track.alpha(0.6) }));
+            canvas.icon(icon, center.0, center.1, 14.0, p.text);
+        }
+        canvas.text(&money(self.tariff), Style::Semibold, 13.5, (TARIFF_DOWN.0 + TARIFF_UP.0) / 2.0, cy + 5.0, p.text, Align::Center);
+
+        canvas.text("Os valores são estimados: energia gasta vezes o preço do kWh.", Style::Regular, 11.5, 18.0, 384.0, p.faint, Align::Left);
+        canvas.text("O mês conta a partir da primeira leitura feita nele.", Style::Regular, 11.5, 18.0, 400.0, p.faint, Align::Left);
     }
 
     fn draw_button(&self, canvas: &mut Canvas, rect: (f32, f32, f32, f32), icon: Option<&str>, label: &str, primary: bool, hit: Hit) {
@@ -1540,6 +1683,29 @@ mod tests {
     }
 
     #[test]
+    fn formats_money_and_kwh_like_pt_br() {
+        assert_eq!(money(272.7), "R$ 272,70");
+        assert_eq!(money(1234.567), "R$ 1.234,57");
+        assert_eq!(decimal(12.44, 1), "12,4");
+        assert_eq!(decimal(0.0, 2), "0,00");
+    }
+
+    #[test]
+    fn the_energy_page_sets_the_kwh_price() {
+        let mut panel = Panel::new();
+        panel.set_view(demo_view());
+        panel.set_energy(0.9, Some((12.5, "11/10".into())));
+        click(&mut panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);
+        let (x, y) = center(settings_row(4));
+        assert!(click(&mut panel, x, y).is_empty());
+        assert_eq!(panel.screen(), Screen::Energy);
+        assert_eq!(click(&mut panel, TARIFF_UP.0, TARIFF_UP.1), [Action::Tariff(0.91)]);
+        assert_eq!(click(&mut panel, TARIFF_DOWN.0, TARIFF_DOWN.1), [Action::Tariff(0.9)]);
+        assert!(panel.escape().is_empty());
+        assert_eq!(panel.screen(), Screen::Settings);
+    }
+
+    #[test]
     fn escape_closes_layers_before_hiding() {
         let mut panel = Panel::new();
         panel.set_view(demo_view());
@@ -1651,6 +1817,14 @@ mod tests {
             click(panel, x, y);
             panel.pointer_move(200.0, panel.menu_rect(Menu::Swing).1 + 6.0 + MENU_ROW * 1.5);
         });
+        for light in [false, true] {
+            render("consumo", &demo_view(), light, 1.0, &|panel| {
+                panel.set_energy(0.92, Some((12.5, "11/10".into())));
+                click(panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);
+                let (x, y) = center(settings_row(4));
+                click(panel, x, y);
+            });
+        }
         for light in [false, true] {
             render("ajustes", &demo_view(), light, 1.0, &|panel| {
                 click(panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);

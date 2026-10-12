@@ -260,6 +260,7 @@ impl CloudUnit {
 
     fn read(&mut self, device: &DeviceRef) -> Result<Device, Failure> {
         let mut state = read_device(&self.cloud.status(&device.id)?);
+        state.insert("id".into(), json!(device.id));
         state.insert("nome".into(), json!(device.nome));
         Ok(state)
     }
