@@ -8,6 +8,10 @@ O ícone na bandeja mostra a temperatura do ambiente, com uma barrinha na cor do
 | --- | --- | --- | --- |
 | ![Painel no tema escuro](docs/painel-escuro.png) | ![Painel no tema claro com WindFree](docs/painel-claro.png) | ![Tela para conectar a conta Samsung](docs/conectar.png) | ![Ajustes do aparelho](docs/ajustes.png) |
 
+## Baixar
+
+O exe pronto fica nas [releases](https://github.com/juserrrrr/windfree-panel/releases/latest). Baixe, abra e entre com a conta Samsung. Ele não é assinado, então o Windows pode mostrar "O Windows protegeu o computador": clique em **Mais informações** e **Executar assim mesmo**.
+
 ## Por que é leve
 
 - **Sem navegador.** O painel é desenhado em Rust com [tiny-skia](https://github.com/linebender/tiny-skia) numa janela comum do Windows. Os cantos arredondados e a sombra são do próprio Windows 11.
@@ -45,6 +49,8 @@ target\release\ar-tray.exe --demo
 - `cargo test`: comandos, fila, telas, cliques e o ícone da bandeja.
 - `cargo test smartthings -- --ignored`: chamadas reais à SmartThings, sem login.
 - `cargo test preview -- --ignored`: salva imagens do painel em vários estados, nos dois temas, em `target\preview`.
+
+Para gerar o exe de uma release sem caminhos da máquina dentro dele, rode `powershell -ExecutionPolicy Bypass -File tools\gerar-release.ps1`. O exe fica em `dist\`, com o hash SHA-256 ao lado.
 
 ## Usar o painel
 
