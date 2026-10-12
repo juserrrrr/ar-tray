@@ -9,15 +9,20 @@ pub const HEIGHT: f32 = 150.0;
 /// The scene's top in the drawing, which starts above the unit.
 const TOP: f32 = 12.0;
 
-// The unit: a 2.9 to 1 front, like the real wall units.
-const BODY: (f32, f32, f32, f32) = (44.0, 16.0, 232.0, 80.0);
-const SEAM_Y: f32 = 35.0;
-/// The micro-perforated field on the lower front.
-const FIELD: (f32, f32, f32, f32) = (54.0, 50.0, 212.0, 40.0);
-const HOLE_PITCH: f32 = 2.6;
-const BLADE_TOP: f32 = 96.0;
-const SWAY_ORIGIN: (f32, f32) = (160.0, 103.0);
-const AIR_TOP: f32 = 104.0;
+// The unit follows the WindFree Connect front: a 2.8 to 1 box with the intake grille on
+// top, a smooth upper band, the perforated field and a lower lip with the blade and display.
+const BODY: (f32, f32, f32, f32) = (44.0, 16.0, 232.0, 82.0);
+/// Where the smooth upper band ends and where the lower lip starts.
+const BAND_Y: f32 = 31.0;
+const LIP_Y: f32 = 78.0;
+/// The micro-perforated field that WindFree breathes through.
+const FIELD: (f32, f32, f32, f32) = (50.0, 33.0, 220.0, 43.0);
+const HOLE_PITCH: f32 = 2.2;
+/// The blade covers the outlet on the left of the lip; the display window sits on the right.
+const BLADE: (f32, f32, f32, f32) = (54.0, 83.0, 176.0, 10.0);
+const DISPLAY: (f32, f32, f32, f32) = (236.0, 82.0, 32.0, 12.0);
+const SWAY_ORIGIN: (f32, f32) = (142.0, 99.0);
+const AIR_TOP: f32 = 100.0;
 const AIR_BOTTOM: f32 = 176.0;
 
 /// What the scene shows; the panel eases the numbers between states.
@@ -104,8 +109,8 @@ impl Scene {
             .map(|index| {
                 let position = index as f32 / (count - 1) as f32;
                 let fade = 1.0 - (position - 0.5).abs() * 0.9;
-                let x = 84.0 + position * 152.0;
-                let spread = (x - 160.0) * 0.5;
+                let x = 64.0 + position * 156.0;
+                let spread = (x - 142.0) * 0.5;
                 let bend = random.range(-6.0, 6.0);
                 let mut builder = PathBuilder::new();
                 builder.move_to(x, AIR_TOP);
@@ -124,13 +129,13 @@ impl Scene {
             .collect();
         let motes = (0..48)
             .map(|_| {
-                let x = random.range(62.0, 258.0);
+                let x = random.range(56.0, 264.0);
                 Mote {
                     x,
-                    y: random.range(BODY.1 + 60.0, BODY.1 + 74.0),
+                    y: random.range(BODY.1 + BODY.3 + 1.0, BODY.1 + BODY.3 + 7.0),
                     radius: random.range(0.8, 1.8),
                     dx: (x - 160.0) * 0.12 + random.range(-5.0, 5.0),
-                    dy: random.range(26.0, 66.0),
+                    dy: random.range(20.0, 58.0),
                     seconds: random.range(3.6, 7.2),
                     phase: random.next(),
                 }
@@ -150,90 +155,106 @@ impl Scene {
     pub fn draw_unit(&mut self, canvas: &mut Canvas, look: &Look) {
         let on = look.power;
         let (x, y, width, height) = BODY;
+        let bottom = y + height;
         let glow = look.tint.alpha(if look.light { 0.16 } else { 0.22 } * on);
-        canvas.fill(&ellipse(160.0, 140.0, 128.0, 34.0), &paint(radial(160.0, 140.0, 128.0, 34.0, &[(0.0, glow), (1.0, glow.alpha(0.0))])));
+        canvas.fill(&ellipse(150.0, 142.0, 130.0, 34.0), &paint(radial(150.0, 142.0, 130.0, 34.0, &[(0.0, glow), (1.0, glow.alpha(0.0))])));
 
         // The unit hangs on a wall: a soft shadow behind it and a contact shadow under it.
-        let wall = if look.light { 0.05 } else { 0.12 };
-        for (grow, alpha) in [(9.0, 0.5), (5.0, 0.8), (2.0, 1.0)] {
+        let wall = if look.light { 0.03 } else { 0.13 };
+        let spread: [(f32, f32); 3] = if look.light { [(5.0, 0.4), (2.5, 0.7), (1.0, 1.0)] } else { [(10.0, 0.45), (5.0, 0.75), (2.0, 1.0)] };
+        for (grow, alpha) in spread {
             let shadow = Rgba(0, 0, 0, (255.0 * wall * alpha) as u8);
-            canvas.fill(&rounded(x - grow, y + 3.0 - grow * 0.4, width + grow * 2.0, height + grow * 1.6, 14.0 + grow), &solid(shadow));
+            canvas.fill(&rounded(x - grow, y + 4.0 - grow * 0.4, width + grow * 2.0, height + grow * 1.6, 8.0 + grow), &solid(shadow));
         }
-        let contact = Rgba(0, 0, 0, if look.light { 60 } else { 150 });
-        canvas.fill(&ellipse(160.0, 110.0, 124.0, 8.0), &paint(radial(160.0, 110.0, 124.0, 8.0, &[(0.0, contact), (1.0, contact.alpha(0.0))])));
+        let contact = Rgba(0, 0, 0, if look.light { 55 } else { 140 });
+        canvas.fill(&ellipse(160.0, bottom + 5.0, 122.0, 7.0), &paint(radial(160.0, bottom + 5.0, 122.0, 7.0, &[(0.0, contact), (1.0, contact.alpha(0.0))])));
 
         // Off dims the body a little, like a unit with the room lights low.
         let shade = |color: u32| Rgba::hex(color).mix(Rgba(24, 26, 30, 255), 0.14 * (1.0 - on));
-
-        // The top face, seen from slightly below, peeks over the front.
-        canvas.fill(&rounded(x + 9.0, y - 4.5, width - 18.0, 9.0, 4.5), &paint(linear((0.0, y - 4.5), (0.0, y + 2.0), &[(0.0, shade(0xd9dee4)), (1.0, shade(0xf7f9fb))])));
-
-        // Underside first, so the front panel sits over its edge.
-        let mut under = PathBuilder::new();
-        under.move_to(x + 6.0, 90.0);
-        under.line_to(x + width - 6.0, 90.0);
-        under.cubic_to(x + width - 6.0, 98.0, x + width - 12.0, 103.0, x + width - 24.0, 104.5);
-        under.line_to(x + 24.0, 104.5);
-        under.cubic_to(x + 12.0, 103.0, x + 6.0, 98.0, x + 6.0, 90.0);
-        under.close();
-        if let Some(path) = under.finish() {
-            canvas.fill(&path, &paint(linear((0.0, 90.0), (0.0, 104.5), &[(0.0, shade(0xcdd3da)), (1.0, shade(0x9ea7b2))])));
-        }
-        canvas.fill(&rounded(70.0, 97.0, 180.0, 6.5, 3.25), &paint(linear((0.0, 97.0), (0.0, 103.5), &[(0.0, Rgba::hex(0x07090b)), (1.0, Rgba::hex(0x2a3038))])));
-
-        let body = rounded(x, y, width, height, 15.0);
-        canvas.fill(&body, &paint(linear((0.0, y), (0.0, y + height), &[(0.0, shade(0xffffff)), (0.45, shade(0xf6f8fa)), (1.0, shade(0xe3e8ed))])));
-        // Rounded ends, a gloss across the upper front and the curve into the base.
-        let edge = Rgba(20, 26, 34, 0);
-        canvas.fill(&body, &paint(linear((x, 0.0), (x + width, 0.0), &[(0.0, edge.with_alpha(58)), (0.1, edge), (0.9, edge), (1.0, edge.with_alpha(62))])));
-        let gloss = Rgba(255, 255, 255, 0);
-        canvas.fill(&body, &paint(linear((x, y), (x + width * 0.55, y + height), &[(0.0, gloss.with_alpha(150)), (0.45, gloss.with_alpha(40)), (0.6, gloss)])));
-        canvas.fill(&body, &paint(linear((0.0, y + height - 16.0), (0.0, y + height), &[(0.0, edge), (1.0, edge.with_alpha(30))])));
-        canvas.stroke(&rounded(x + 0.4, y + 0.4, width - 0.8, height - 0.8, 14.6), &solid(Rgba(0, 0, 0, 22)), 0.8);
-
-        // Top cover: a bright lip and the seam above the front panel.
         let thin = |width: f32| Stroke { width, line_cap: LineCap::Round, ..Stroke::default() };
-        if let Some(path) = line((x + 14.0, y + 1.4), (x + width - 14.0, y + 1.4)) {
-            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 235)), &thin(1.4), Transform::identity());
-        }
-        if let Some(path) = line((x + 6.0, SEAM_Y), (x + width - 6.0, SEAM_Y)) {
-            canvas.stroke_with(&path, &solid(shade(0xd2d8df)), &thin(0.9), Transform::identity());
-        }
-        if let Some(path) = line((x + 6.0, SEAM_Y + 1.0), (x + width - 6.0, SEAM_Y + 1.0)) {
-            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 210)), &thin(0.8), Transform::identity());
-        }
 
-        // The micro-perforated front that WindFree breathes through.
-        let tint_holes = look.tint.mix(Rgba::hex(0x1d4f7a), 0.4);
-        let hole_color = Rgba::hex(0x9aa4ae).mix(tint_holes, 0.85 * look.windfree * on);
-        self.draw_holes(canvas, hole_color);
-
-        // Display on the right of the front, as on the real units, with the WindFree mark when it runs.
-        if let Some(text) = &look.display {
-            let glow = Rgba::hex(0xeaf6ff).mix(look.tint, 0.55).alpha(on);
-            canvas.fill(&ellipse(242.0, 42.5, 18.0, 7.0), &paint(radial(242.0, 42.5, 18.0, 7.0, &[(0.0, glow.alpha(0.22)), (1.0, glow.alpha(0.0))])));
-            canvas.text(text, Style::Semibold, 10.0, 252.0, 46.0, glow, Align::Right);
-            let mark = glow.alpha(look.windfree);
-            for (index, length) in [5.0, 3.5, 5.0].into_iter().enumerate() {
-                let row = 40.2 + index as f32 * 2.2;
-                if let Some(path) = line((225.0, row), (225.0 + length, row)) {
-                    canvas.stroke_with(&path, &solid(mark), &thin(0.9), Transform::identity());
-                }
+        // Top face with the intake grille, seen from slightly above.
+        let mut top = PathBuilder::new();
+        top.move_to(x + 7.0, y - 7.0);
+        top.line_to(x + width - 7.0, y - 7.0);
+        top.line_to(x + width - 1.0, y + 1.0);
+        top.line_to(x + 1.0, y + 1.0);
+        top.close();
+        if let Some(path) = top.finish() {
+            canvas.fill(&path, &paint(linear((0.0, y - 7.0), (0.0, y + 1.0), &[(0.0, shade(0xd3d9df)), (1.0, shade(0xeff2f5))])));
+        }
+        for row in [y - 4.6, y - 2.2] {
+            if let Some(path) = line((x + 8.0, row), (x + width - 8.0, row)) {
+                canvas.stroke_with(&path, &solid(shade(0xb9c1ca)), &thin(0.7), Transform::identity());
+            }
+        }
+        for divider in 1..5 {
+            let along = x + width * divider as f32 / 5.0;
+            if let Some(path) = line((along, y - 6.5), (along + (along - 160.0) * 0.02, y + 0.5)) {
+                canvas.stroke_with(&path, &solid(shade(0xc9d0d7)), &thin(1.1), Transform::identity());
             }
         }
 
-        // The blade swings down for normal airflow and stays shut in WindFree.
-        let open = on * (1.0 - look.windfree);
-        let drop = 6.5 * open;
-        if open > 0.01 {
-            // Its underside shows as it tilts.
-            canvas.fill(&rounded(70.0, BLADE_TOP + 2.0 + drop, 180.0, 3.5 * open + 1.0, 2.0), &solid(shade(0xaab2bc).alpha(open)));
+        // The front: nearly flat, with small rounded corners.
+        let body = rounded(x, y, width, height, 7.0);
+        canvas.fill(&body, &paint(linear((0.0, y), (0.0, bottom), &[(0.0, shade(0xffffff)), (0.55, shade(0xf7f9fa)), (1.0, shade(0xeceff2))])));
+        let edge = Rgba(20, 26, 34, 0);
+        canvas.fill(&body, &paint(linear((x, 0.0), (x + width, 0.0), &[(0.0, edge.with_alpha(46)), (0.04, edge), (0.96, edge), (1.0, edge.with_alpha(50))])));
+        let gloss = Rgba(255, 255, 255, 0);
+        canvas.fill(&body, &paint(linear((x, y), (x + width * 0.5, bottom), &[(0.0, gloss.with_alpha(120)), (0.5, gloss.with_alpha(30)), (0.65, gloss)])));
+        canvas.stroke(&rounded(x + 0.4, y + 0.4, width - 0.8, height - 0.8, 6.6), &solid(Rgba(0, 0, 0, 24)), 0.8);
+        if let Some(path) = line((x + 6.0, y + 1.2), (x + width - 6.0, y + 1.2)) {
+            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 240)), &thin(1.2), Transform::identity());
         }
-        let blade = Transform::from_translate(160.0, BLADE_TOP)
-            .pre_translate(0.0, drop)
-            .pre_scale(1.0, 1.0 - 0.58 * open)
-            .pre_translate(-160.0, -BLADE_TOP);
-        canvas.fill_at(&rounded(68.0, BLADE_TOP, 184.0, 8.5, 4.25), &paint(linear((0.0, BLADE_TOP), (0.0, BLADE_TOP + 8.5), &[(0.0, shade(0xf4f6f8)), (1.0, shade(0xd0d6dd))])), blade);
+
+        // The perforated field, which takes the mode color while WindFree runs.
+        let tint_holes = look.tint.mix(Rgba::hex(0x1d4f7a), 0.4);
+        let hole_color = Rgba::hex(0xa3acb6).mix(tint_holes, 0.85 * look.windfree * on);
+        self.draw_holes(canvas, hole_color);
+        if let Some(path) = line((x + 5.0, BAND_Y), (x + width - 5.0, BAND_Y)) {
+            canvas.stroke_with(&path, &solid(shade(0xe3e7eb)), &thin(0.6), Transform::identity());
+        }
+
+        // The lower lip curves back toward the wall.
+        let lip = rounded(x + 2.0, LIP_Y, width - 4.0, bottom - LIP_Y - 1.0, 6.0);
+        canvas.fill(&lip, &paint(linear((0.0, LIP_Y), (0.0, bottom), &[(0.0, shade(0xf4f6f8)), (0.5, shade(0xeaedf0)), (1.0, shade(0xd8dde2))])));
+        canvas.stroke(&rounded(x + 2.5, LIP_Y + 0.5, width - 5.0, bottom - LIP_Y - 2.0, 5.5), &solid(shade(0xd0d6dc)), 0.7);
+        canvas.fill(&lip, &paint(linear((x, 0.0), (x + width, 0.0), &[(0.0, edge.with_alpha(40)), (0.05, edge), (0.95, edge), (1.0, edge.with_alpha(44))])));
+
+        // Behind the blade: the dark outlet with the side-to-side vanes.
+        let (bx, by, bw, bh) = BLADE;
+        canvas.fill(&rounded(bx, by, bw, bh, bh / 2.0), &paint(linear((0.0, by), (0.0, by + bh), &[(0.0, Rgba::hex(0x0a0c0f)), (1.0, Rgba::hex(0x2c323a))])));
+        for vane in 1..16 {
+            let along = bx + bw * vane as f32 / 16.0;
+            if let Some(path) = line((along, by + 2.0), (along, by + bh - 2.0)) {
+                canvas.stroke_with(&path, &solid(Rgba::hex(0x3b424b)), &thin(0.9), Transform::identity());
+            }
+        }
+
+        // The blade tilts down from the bottom of the outlet for normal airflow and stays shut in WindFree.
+        let open = on * (1.0 - look.windfree);
+        let hinge = by + bh;
+        let blade = Transform::from_translate(0.0, hinge).pre_concat(Transform::from_row(1.0, 0.0, 0.0, 1.0 - 0.45 * open, 0.0, 0.0)).pre_translate(0.0, -hinge).pre_concat(Transform::from_translate(0.0, (bh + 1.0) * open));
+        canvas.fill_at(&rounded(bx, by, bw, bh, bh / 2.0), &paint(linear((0.0, by), (0.0, by + bh), &[(0.0, shade(0xffffff)), (1.0, shade(0xe6eaee))])), blade);
+        canvas.stroke_with(&rounded(bx + 0.4, by + 0.4, bw - 0.8, bh - 0.8, bh / 2.0 - 0.4), &solid(shade(0xccd3da)), &thin(0.6), blade);
+
+        // The display window on the right of the lip; the digits light up when the display is on.
+        let (dx, dy, dw, dh) = DISPLAY;
+        canvas.fill(&rounded(dx, dy, dw, dh, 3.0), &paint(linear((0.0, dy), (0.0, dy + dh), &[(0.0, shade(0xe4e8ec)), (1.0, shade(0xf0f2f5))])));
+        canvas.stroke(&rounded(dx + 0.3, dy + 0.3, dw - 0.6, dh - 0.6, 2.7), &solid(shade(0xcfd5db)), 0.6);
+        if let Some(text) = &look.display {
+            let glow = Rgba::hex(0xeaf6ff).mix(look.tint, 0.6).alpha(on);
+            canvas.fill(&ellipse(dx + dw / 2.0, dy + dh / 2.0, dw * 0.7, dh), &paint(radial(dx + dw / 2.0, dy + dh / 2.0, dw * 0.7, dh, &[(0.0, glow.alpha(0.28)), (1.0, glow.alpha(0.0))])));
+            canvas.text(&format!("{text}°"), Style::Semibold, 8.5, dx + dw - 4.0, dy + dh - 3.0, glow.mix(Rgba::hex(0x2a5d8a), 0.25), Align::Right);
+            // The WindFree mark beside the digits while it runs.
+            let mark = glow.alpha(look.windfree);
+            for (index, length) in [4.0, 3.0, 4.0].into_iter().enumerate() {
+                let row = dy + 3.6 + index as f32 * 2.3;
+                if let Some(path) = line((dx + 3.5, row), (dx + 3.5 + length, row)) {
+                    canvas.stroke_with(&path, &solid(mark), &thin(0.8), Transform::identity());
+                }
+            }
+        }
     }
 
     fn draw_holes(&mut self, canvas: &mut Canvas, color: Rgba) {
@@ -272,10 +293,10 @@ impl Scene {
         };
 
         let mut sheet = PathBuilder::new();
-        sheet.move_to(84.0, AIR_TOP - 1.0);
-        sheet.line_to(236.0, AIR_TOP - 1.0);
-        sheet.line_to(278.0, AIR_BOTTOM);
-        sheet.line_to(42.0, AIR_BOTTOM);
+        sheet.move_to(62.0, AIR_TOP - 1.0);
+        sheet.line_to(222.0, AIR_TOP - 1.0);
+        sheet.line_to(262.0, AIR_BOTTOM);
+        sheet.line_to(22.0, AIR_BOTTOM);
         sheet.close();
         if let Some(sheet) = sheet.finish() {
             canvas.fill_at(&sheet, &fall(0.12), sway);
@@ -311,7 +332,7 @@ impl Scene {
     }
 }
 
-/// The perforation grid, fading at the sides and toward the seam, rendered once per scale and color.
+/// The perforation grid: fine, even dots across the front, rendered once per scale and color.
 fn render_holes(scale: f32, color: Rgba) -> Option<Pixmap> {
     let (_, _, width, height) = FIELD;
     let mut pixmap = Pixmap::new((width * scale).ceil() as u32 + 1, (height * scale).ceil() as u32 + 1)?;
@@ -323,8 +344,8 @@ fn render_holes(scale: f32, color: Rgba) -> Option<Pixmap> {
         let mut x = HOLE_PITCH / 2.0 + if row % 2 == 1 { HOLE_PITCH / 2.0 } else { 0.0 };
         while x < width {
             let side = (x / width).min(1.0 - x / width);
-            let fade = (side / 0.09).min(1.0) * (0.25 + 0.75 * (y / (height * 0.35)).min(1.0));
-            canvas.fill(&ellipse(x, y, 0.55, 0.55), &solid(color.alpha(fade)));
+            let fade = (side / 0.03).min(1.0) * (0.55 + 0.45 * (y / (height * 0.25)).min(1.0));
+            canvas.fill(&ellipse(x, y, 0.48, 0.48), &solid(color.alpha(fade)));
             x += HOLE_PITCH;
         }
         y += HOLE_PITCH * 0.87;

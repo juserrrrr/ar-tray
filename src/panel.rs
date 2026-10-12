@@ -1519,6 +1519,8 @@ mod tests {
             }
         }
         render("vento", &cases[1].1, false, 1.5, &|_| {});
+        render("detalhe", &cases[1].1, false, 3.0, &|_| {});
+        render("detalhe-windfree", &cases[0].1, true, 3.0, &|_| {});
         render("menu", &demo_view(), false, 1.0, &|panel| {
             let (x, y) = center(tile_rect(1));
             click(panel, x, y);
