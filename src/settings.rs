@@ -54,18 +54,36 @@ pub struct MonthUse {
 }
 
 /// SmartThings only reports the unit's lifetime energy, so the reading at the start of each month
-/// (or the first one seen in it) is kept to tell this month's use.
+/// is kept to tell this month's use.
+///
+/// The last reading is kept too: a new month starts from where the previous one ended, so use
+/// while the app was closed at the turn of the month still counts. Without a reading from the
+/// previous month, counting starts at the first reading seen.
 pub fn track_month(file: &Path, device: &str, total_kwh: f64, today: (u16, u16, u16)) -> MonthUse {
     let (year, month, day) = today;
     let key = format!("{year:04}-{month:02}");
+    let previous = if month == 1 { format!("{:04}-12", year - 1) } else { format!("{year:04}-{:02}", month - 1) };
     let mut settings = read(file);
-    let record = &settings["energia"];
-    let current = record["mes"] == key.as_str() && record["aparelho"] == device && record["inicioKwh"].as_f64().is_some_and(|start| start <= total_kwh);
+    let record = settings["energia"].clone();
+    let same_unit = record["aparelho"] == device;
+    let mut changed = false;
+    let current = record["mes"] == key.as_str() && same_unit && record["inicioKwh"].as_f64().is_some_and(|start| start <= total_kwh);
     if !current {
-        settings["energia"] = json!({ "mes": key, "aparelho": device, "inicioKwh": total_kwh, "desde": format!("{day:02}/{month:02}") });
-        if let Err(error) = fs::write(file, settings.to_string()) {
-            eprintln!("não deu para salvar o consumo do mês: {error}");
-        }
+        let carried = record["ultimaKwh"].as_f64().filter(|last| same_unit && record["ultimaMes"] == previous.as_str() && *last <= total_kwh);
+        let (start, since) = match carried {
+            Some(last) => (last, format!("01/{month:02}")),
+            None => (total_kwh, format!("{day:02}/{month:02}")),
+        };
+        settings["energia"] = json!({ "mes": key, "aparelho": device, "inicioKwh": start, "desde": since });
+        changed = true;
+    }
+    if settings["energia"]["ultimaKwh"].as_f64() != Some(total_kwh) || settings["energia"]["ultimaMes"] != key.as_str() {
+        settings["energia"]["ultimaKwh"] = json!(total_kwh);
+        settings["energia"]["ultimaMes"] = json!(key);
+        changed = true;
+    }
+    if changed && let Err(error) = fs::write(file, settings.to_string()) {
+        eprintln!("não deu para salvar o consumo do mês: {error}");
     }
     let record = &settings["energia"];
     MonthUse { kwh: (total_kwh - record["inicioKwh"].as_f64().unwrap_or(total_kwh)).max(0.0), since: record["desde"].as_str().unwrap_or("").to_owned() }
@@ -120,8 +138,12 @@ mod tests {
         assert_eq!((first.kwh, first.since.as_str()), (0.0, "11/10"));
         let later = track_month(&file, "a", 312.5, (2026, 10, 20));
         assert_eq!((later.kwh, later.since.as_str()), (12.5, "11/10"));
-        let next_month = track_month(&file, "a", 320.0, (2026, 11, 1));
-        assert_eq!((next_month.kwh, next_month.since.as_str()), (0.0, "01/11"));
+        // The app opens only on the 3rd; November still starts from the last October reading.
+        let next_month = track_month(&file, "a", 320.0, (2026, 11, 3));
+        assert_eq!((next_month.kwh, next_month.since.as_str()), (7.5, "01/11"));
+        // After a month with no reading at all, counting starts at the first one seen.
+        let skipped = track_month(&file, "a", 400.0, (2027, 1, 9));
+        assert_eq!((skipped.kwh, skipped.since.as_str()), (0.0, "09/01"));
         let other_unit = track_month(&file, "b", 50.0, (2026, 11, 2));
         assert_eq!(other_unit.kwh, 0.0);
         // Set from the SmartThings app, then counting goes on from there.

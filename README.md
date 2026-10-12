@@ -62,7 +62,7 @@ Para gerar o exe de uma release sem caminhos da máquina dentro dele, rode `powe
 
 Em **Ajustes > Consumo** aparecem a potência agora, o gasto do mês em kWh e em reais, e o contador do aparelho desde a instalação. Os reais são estimados com o preço do kWh que você ajusta ali, pela conta de luz. A potência não é ao vivo: o ar manda a leitura à SmartThings a cada 5 minutos.
 
-A API da SmartThings não informa o consumo do mês, só o contador total do aparelho. Por isso o app guarda a leitura do começo de cada mês e conta a partir dela. No primeiro mês, toque em **Este mês** e digite os kWh que o app SmartThings mostra para o mês; o painel segue contando a partir daí.
+A API da SmartThings não informa o consumo do mês, só o contador total do aparelho. Por isso o app guarda a última leitura de cada mês, e o mês seguinte começa exatamente de onde o anterior parou, mesmo que o app esteja fechado na virada. No primeiro mês, toque em **Este mês** e digite os kWh que o app SmartThings mostra para o mês; o painel segue contando a partir daí.
 
 O painel segue o tema claro ou escuro do Windows. Quando o Windows inicia o app, ele fica só no ícone, sem abrir o painel.
 
