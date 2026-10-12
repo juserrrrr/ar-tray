@@ -9,7 +9,7 @@ use crate::gfx::{Align, Canvas, Rgba, Style, circle, fonts, paint, radial, round
 use crate::scene::{self, Scene};
 
 pub const WIDTH: f32 = 372.0;
-pub const HEIGHT: f32 = 560.0;
+pub const HEIGHT: f32 = 600.0;
 const TEMP_MIN: i64 = 16;
 const TEMP_MAX: i64 = 30;
 
@@ -79,27 +79,29 @@ fn on_accent(accent: Rgba) -> Rgba {
 }
 
 const HEADER_POWER: (f32, f32) = (334.0, 38.0);
-const HERO_Y: f32 = 62.0;
-const HERO_HEIGHT: f32 = 140.0;
-const CLIMATE_Y: f32 = 236.0;
+// The unit sits below the header with room to breathe, and its air ends above the setpoint.
+const HERO_Y: f32 = 74.0;
+const HERO_HEIGHT: f32 = 150.0;
+const CLIMATE_Y: f32 = 278.0;
 const TEMP_DOWN: (f32, f32) = (42.0, CLIMATE_Y);
 const TEMP_UP: (f32, f32) = (330.0, CLIMATE_Y);
 /// The slider's track runs between these x and sits on this y.
-const SLIDER: (f32, f32, f32) = (34.0, 338.0, 288.0);
-const SLIDER_HIT: (f32, f32, f32, f32) = (18.0, 270.0, 336.0, 36.0);
-const MODES: (f32, f32, f32, f32) = (14.0, 328.0, 344.0, 62.0);
-const TILES_Y: f32 = 402.0;
+const SLIDER: (f32, f32, f32) = (34.0, 338.0, 330.0);
+const SLIDER_HIT: (f32, f32, f32, f32) = (18.0, 312.0, 336.0, 36.0);
+const MODES: (f32, f32, f32, f32) = (14.0, 370.0, 344.0, 62.0);
+const TILES_Y: f32 = 444.0;
 const TILE: (f32, f32, f32) = (80.0, 84.0, 8.0);
-const STATUS_Y: f32 = 527.0;
+const STATUS_Y: f32 = 568.0;
 const SETTINGS_BUTTON: (f32, f32) = (336.0, STATUS_Y);
 const BACK_BUTTON: (f32, f32) = (32.0, 34.0);
 const ROW_HEIGHT: f32 = 54.0;
 const MENU_WIDTH: f32 = 196.0;
 const MENU_ROW: f32 = 36.0;
-const PRIMARY: (f32, f32, f32, f32) = (18.0, 300.0, 336.0, 48.0);
-const SECONDARY_LEFT: (f32, f32, f32, f32) = (14.0, 364.0, 168.0, 46.0);
-const SECONDARY_RIGHT: (f32, f32, f32, f32) = (190.0, 364.0, 168.0, 46.0);
-const SECONDARY_WIDE: (f32, f32, f32, f32) = (14.0, 364.0, 344.0, 46.0);
+const CONNECT_TITLE_Y: f32 = 276.0;
+const PRIMARY: (f32, f32, f32, f32) = (18.0, 340.0, 336.0, 48.0);
+const SECONDARY_LEFT: (f32, f32, f32, f32) = (14.0, 404.0, 168.0, 46.0);
+const SECONDARY_RIGHT: (f32, f32, f32, f32) = (190.0, 404.0, 168.0, 46.0);
+const SECONDARY_WIDE: (f32, f32, f32, f32) = (14.0, 404.0, 344.0, 46.0);
 const DEVICE_ROWS: usize = 4;
 
 struct Choice {
@@ -334,16 +336,16 @@ fn tile_rect(index: usize) -> (f32, f32, f32, f32) {
 fn settings_row(index: usize) -> (f32, f32, f32, f32) {
     // Three switches, then filter and energy, then autostart, then the account.
     let y = match index {
-        0..=2 => 64.0 + index as f32 * ROW_HEIGHT,
-        3 | 4 => 238.0 + (index - 3) as f32 * ROW_HEIGHT,
-        5 => 358.0,
-        _ => 424.0 + (index - 6) as f32 * ROW_HEIGHT,
+        0..=2 => 68.0 + index as f32 * ROW_HEIGHT,
+        3 | 4 => 246.0 + (index - 3) as f32 * ROW_HEIGHT,
+        5 => 370.0,
+        _ => 440.0 + (index - 6) as f32 * ROW_HEIGHT,
     };
     (14.0, y, 344.0, ROW_HEIGHT)
 }
 
 fn device_row(index: usize) -> (f32, f32, f32, f32) {
-    (14.0, PRIMARY.1 + index as f32 * 58.0, 344.0, 50.0)
+    (14.0, PRIMARY.1 + index as f32 * 54.0, 344.0, 48.0)
 }
 
 pub struct Panel {
@@ -974,7 +976,7 @@ impl Panel {
         if loading {
             // Controls wait for the first reading, under a veil of the background.
             let veil = solid(p.background.alpha(0.6));
-            for rect in [(18.0, 212.0, 336.0, 48.0), SLIDER_HIT, MODES, (14.0, TILES_Y, 344.0, TILE.1)] {
+            for rect in [(18.0, CLIMATE_Y - 24.0, 336.0, 48.0), SLIDER_HIT, MODES, (14.0, TILES_Y, 344.0, TILE.1)] {
                 canvas.fill(&rounded(rect.0 - 2.0, rect.1 - 2.0, rect.2 + 4.0, rect.3 + 4.0, 16.0), &veil);
             }
         }
@@ -1283,14 +1285,14 @@ impl Panel {
             Screen::Choose => ("Escolha o ar-condicionado", ["Sua conta tem mais de um aparelho.", "Dá para trocar depois nos ajustes."]),
             _ => ("Nenhum ar-condicionado", ["Esta conta não tem um ar-condicionado no", "SmartThings. Confira no app do celular."]),
         };
-        canvas.text(title, Style::Semibold, 19.0, WIDTH / 2.0, 236.0, p.text, Align::Center);
-        canvas.text(body[0], Style::Regular, 13.0, WIDTH / 2.0, 260.0, p.muted, Align::Center);
-        canvas.text(body[1], Style::Regular, 13.0, WIDTH / 2.0, 278.0, p.muted, Align::Center);
+        canvas.text(title, Style::Semibold, 19.0, WIDTH / 2.0, CONNECT_TITLE_Y, p.text, Align::Center);
+        canvas.text(body[0], Style::Regular, 13.0, WIDTH / 2.0, CONNECT_TITLE_Y + 24.0, p.muted, Align::Center);
+        canvas.text(body[1], Style::Regular, 13.0, WIDTH / 2.0, CONNECT_TITLE_Y + 42.0, p.muted, Align::Center);
 
         let (footer_icon, footer, footer_color) = match screen {
             Screen::SignIn => {
                 self.draw_button(canvas, PRIMARY, Some("log-in"), "Entrar com a conta Samsung", true, Hit::Primary);
-                let (x, y, width, _) = (14.0, 364.0, 344.0, 0.0);
+                let (x, y, width, _) = SECONDARY_WIDE;
                 canvas.card(x, y, width, 2.0 * ROW_HEIGHT, 16.0, p.card, p.line);
                 canvas.fill(&rounded(x + 14.0, y + ROW_HEIGHT, width - 28.0, 1.0, 0.5), &solid(p.line));
                 for (index, (icon, row_title, note)) in [

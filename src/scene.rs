@@ -152,11 +152,21 @@ impl Scene {
         let (x, y, width, height) = BODY;
         let glow = look.tint.alpha(if look.light { 0.16 } else { 0.22 } * on);
         canvas.fill(&ellipse(160.0, 140.0, 128.0, 34.0), &paint(radial(160.0, 140.0, 128.0, 34.0, &[(0.0, glow), (1.0, glow.alpha(0.0))])));
+
+        // The unit hangs on a wall: a soft shadow behind it and a contact shadow under it.
+        let wall = if look.light { 0.05 } else { 0.12 };
+        for (grow, alpha) in [(9.0, 0.5), (5.0, 0.8), (2.0, 1.0)] {
+            let shadow = Rgba(0, 0, 0, (255.0 * wall * alpha) as u8);
+            canvas.fill(&rounded(x - grow, y + 3.0 - grow * 0.4, width + grow * 2.0, height + grow * 1.6, 14.0 + grow), &solid(shadow));
+        }
         let contact = Rgba(0, 0, 0, if look.light { 60 } else { 150 });
-        canvas.fill(&ellipse(160.0, 109.0, 124.0, 8.0), &paint(radial(160.0, 109.0, 124.0, 8.0, &[(0.0, contact), (1.0, contact.alpha(0.0))])));
+        canvas.fill(&ellipse(160.0, 110.0, 124.0, 8.0), &paint(radial(160.0, 110.0, 124.0, 8.0, &[(0.0, contact), (1.0, contact.alpha(0.0))])));
 
         // Off dims the body a little, like a unit with the room lights low.
         let shade = |color: u32| Rgba::hex(color).mix(Rgba(24, 26, 30, 255), 0.14 * (1.0 - on));
+
+        // The top face, seen from slightly below, peeks over the front.
+        canvas.fill(&rounded(x + 9.0, y - 4.5, width - 18.0, 9.0, 4.5), &paint(linear((0.0, y - 4.5), (0.0, y + 2.0), &[(0.0, shade(0xd9dee4)), (1.0, shade(0xf7f9fb))])));
 
         // Underside first, so the front panel sits over its edge.
         let mut under = PathBuilder::new();
@@ -167,26 +177,30 @@ impl Scene {
         under.cubic_to(x + 12.0, 103.0, x + 6.0, 98.0, x + 6.0, 90.0);
         under.close();
         if let Some(path) = under.finish() {
-            canvas.fill(&path, &paint(linear((0.0, 90.0), (0.0, 104.5), &[(0.0, shade(0xcdd3da)), (1.0, shade(0xa3acb6))])));
+            canvas.fill(&path, &paint(linear((0.0, 90.0), (0.0, 104.5), &[(0.0, shade(0xcdd3da)), (1.0, shade(0x9ea7b2))])));
         }
         canvas.fill(&rounded(70.0, 97.0, 180.0, 6.5, 3.25), &paint(linear((0.0, 97.0), (0.0, 103.5), &[(0.0, Rgba::hex(0x07090b)), (1.0, Rgba::hex(0x2a3038))])));
 
-        let body = rounded(x, y, width, height, 14.0);
-        canvas.fill(&body, &paint(linear((0.0, y), (0.0, y + height), &[(0.0, shade(0xffffff)), (0.5, shade(0xf5f7f9)), (1.0, shade(0xe6eaee))])));
+        let body = rounded(x, y, width, height, 15.0);
+        canvas.fill(&body, &paint(linear((0.0, y), (0.0, y + height), &[(0.0, shade(0xffffff)), (0.45, shade(0xf6f8fa)), (1.0, shade(0xe3e8ed))])));
+        // Rounded ends, a gloss across the upper front and the curve into the base.
         let edge = Rgba(20, 26, 34, 0);
-        canvas.fill(&body, &paint(linear((x, 0.0), (x + width, 0.0), &[(0.0, edge.with_alpha(40)), (0.07, edge), (0.93, edge), (1.0, edge.with_alpha(44))])));
-        canvas.stroke(&rounded(x + 0.4, y + 0.4, width - 0.8, height - 0.8, 13.6), &solid(Rgba(0, 0, 0, 20)), 0.8);
+        canvas.fill(&body, &paint(linear((x, 0.0), (x + width, 0.0), &[(0.0, edge.with_alpha(58)), (0.1, edge), (0.9, edge), (1.0, edge.with_alpha(62))])));
+        let gloss = Rgba(255, 255, 255, 0);
+        canvas.fill(&body, &paint(linear((x, y), (x + width * 0.55, y + height), &[(0.0, gloss.with_alpha(150)), (0.45, gloss.with_alpha(40)), (0.6, gloss)])));
+        canvas.fill(&body, &paint(linear((0.0, y + height - 16.0), (0.0, y + height), &[(0.0, edge), (1.0, edge.with_alpha(30))])));
+        canvas.stroke(&rounded(x + 0.4, y + 0.4, width - 0.8, height - 0.8, 14.6), &solid(Rgba(0, 0, 0, 22)), 0.8);
 
         // Top cover: a bright lip and the seam above the front panel.
         let thin = |width: f32| Stroke { width, line_cap: LineCap::Round, ..Stroke::default() };
         if let Some(path) = line((x + 14.0, y + 1.4), (x + width - 14.0, y + 1.4)) {
-            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 230)), &thin(1.4), Transform::identity());
+            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 235)), &thin(1.4), Transform::identity());
         }
         if let Some(path) = line((x + 6.0, SEAM_Y), (x + width - 6.0, SEAM_Y)) {
-            canvas.stroke_with(&path, &solid(shade(0xd5dbe1)), &thin(0.9), Transform::identity());
+            canvas.stroke_with(&path, &solid(shade(0xd2d8df)), &thin(0.9), Transform::identity());
         }
         if let Some(path) = line((x + 6.0, SEAM_Y + 1.0), (x + width - 6.0, SEAM_Y + 1.0)) {
-            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 200)), &thin(0.8), Transform::identity());
+            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 210)), &thin(0.8), Transform::identity());
         }
 
         // The micro-perforated front that WindFree breathes through.
@@ -194,21 +208,32 @@ impl Scene {
         let hole_color = Rgba::hex(0x9aa4ae).mix(tint_holes, 0.85 * look.windfree * on);
         self.draw_holes(canvas, hole_color);
 
-        // Display on the right of the front, as on the real units.
+        // Display on the right of the front, as on the real units, with the WindFree mark when it runs.
         if let Some(text) = &look.display {
             let glow = Rgba::hex(0xeaf6ff).mix(look.tint, 0.55).alpha(on);
-            canvas.fill(&ellipse(244.0, 42.5, 16.0, 7.0), &paint(radial(244.0, 42.5, 16.0, 7.0, &[(0.0, glow.alpha(0.22)), (1.0, glow.alpha(0.0))])));
+            canvas.fill(&ellipse(242.0, 42.5, 18.0, 7.0), &paint(radial(242.0, 42.5, 18.0, 7.0, &[(0.0, glow.alpha(0.22)), (1.0, glow.alpha(0.0))])));
             canvas.text(text, Style::Semibold, 10.0, 252.0, 46.0, glow, Align::Right);
-            canvas.fill(&ellipse(229.0, 42.5, 1.3, 1.3), &solid(glow.alpha(0.8)));
+            let mark = glow.alpha(look.windfree);
+            for (index, length) in [5.0, 3.5, 5.0].into_iter().enumerate() {
+                let row = 40.2 + index as f32 * 2.2;
+                if let Some(path) = line((225.0, row), (225.0 + length, row)) {
+                    canvas.stroke_with(&path, &solid(mark), &thin(0.9), Transform::identity());
+                }
+            }
         }
 
-        // The blade opens for normal airflow and stays shut in WindFree.
+        // The blade swings down for normal airflow and stays shut in WindFree.
         let open = on * (1.0 - look.windfree);
+        let drop = 6.5 * open;
+        if open > 0.01 {
+            // Its underside shows as it tilts.
+            canvas.fill(&rounded(70.0, BLADE_TOP + 2.0 + drop, 180.0, 3.5 * open + 1.0, 2.0), &solid(shade(0xaab2bc).alpha(open)));
+        }
         let blade = Transform::from_translate(160.0, BLADE_TOP)
-            .pre_translate(0.0, 6.5 * open)
+            .pre_translate(0.0, drop)
             .pre_scale(1.0, 1.0 - 0.58 * open)
             .pre_translate(-160.0, -BLADE_TOP);
-        canvas.fill_at(&rounded(68.0, BLADE_TOP, 184.0, 8.5, 4.25), &paint(linear((0.0, BLADE_TOP), (0.0, BLADE_TOP + 8.5), &[(0.0, shade(0xf0f3f6)), (1.0, shade(0xd3d9df))])), blade);
+        canvas.fill_at(&rounded(68.0, BLADE_TOP, 184.0, 8.5, 4.25), &paint(linear((0.0, BLADE_TOP), (0.0, BLADE_TOP + 8.5), &[(0.0, shade(0xf4f6f8)), (1.0, shade(0xd0d6dd))])), blade);
     }
 
     fn draw_holes(&mut self, canvas: &mut Canvas, color: Rgba) {
