@@ -1,0 +1,44 @@
+[package]
+name = "ar-tray"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Painel na bandeja do Windows para controlar um ar-condicionado Samsung pelo SmartThings"
+publish = false
+
+[build-dependencies]
+winresource = "0.1.32"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3.4", default-features = false, features = ["native-tls", "json"] }
+ab_glyph = "0.2.32"
+tiny-skia = "0.12"
+svgtypes = "0.16"
+sha2 = "0.11"
+base64 = "0.23"
+getrandom = "0.4"
+
+[dependencies.windows-sys]
+version = "0.61"
+features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Security_Cryptography",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Line tables go to the .pdb beside the exe, so a failure in log.txt names its source line.
+debug = "line-tables-only"
