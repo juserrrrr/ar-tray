@@ -366,8 +366,8 @@ fn settings_row(index: usize) -> (f32, f32, f32, f32) {
     let y = match index {
         0..=2 => 68.0 + index as f32 * ROW_HEIGHT,
         3 | 4 => 246.0 + (index - 3) as f32 * ROW_HEIGHT,
-        5 => 370.0,
-        _ => 440.0 + (index - 6) as f32 * ROW_HEIGHT,
+        5 => 388.0,
+        _ => 458.0 + (index - 6) as f32 * ROW_HEIGHT,
     };
     (14.0, y, 344.0, ROW_HEIGHT)
 }
@@ -514,6 +514,10 @@ impl Panel {
         self.field("ligado") == true
     }
 
+    fn turbo(&self) -> bool {
+        self.is_on() && is_turbo(self.extra())
+    }
+
     fn temp(&self) -> Option<i64> {
         self.drag.or_else(|| self.field("temp").as_i64())
     }
@@ -599,6 +603,9 @@ impl Panel {
         if self.view["held"].as_array().is_some_and(|held| !held.is_empty()) {
             return status(Tone::Quiet, "clock", "Aplica quando ligar", false);
         }
+        if self.turbo() {
+            return status(Tone::Quiet, "rocket", "Turbo ligado: temperatura e vento fixos", false);
+        }
         if self.account() == "demo" {
             return status(Tone::Quiet, "sparkles", "Modo demonstração, sem conta Samsung", false);
         }
@@ -620,9 +627,11 @@ impl Panel {
     fn enabled(&self, hit: Hit) -> bool {
         let has_device = self.device().is_some();
         match hit {
-            Hit::Power | Hit::Slider | Hit::Mode(_) | Hit::Tile(0 | 1) | Hit::Item(_) => has_device,
-            Hit::TempDown => has_device && self.temp().is_some_and(|temp| temp > TEMP_MIN),
-            Hit::TempUp => has_device && self.temp().is_some_and(|temp| temp < TEMP_MAX),
+            Hit::Power | Hit::Mode(_) | Hit::Tile(1) | Hit::Item(_) => has_device,
+            // The unit holds the setpoint and the fan while turbo runs.
+            Hit::Slider | Hit::Tile(0) => has_device && !self.turbo(),
+            Hit::TempDown => has_device && !self.turbo() && self.temp().is_some_and(|temp| temp > TEMP_MIN),
+            Hit::TempUp => has_device && !self.turbo() && self.temp().is_some_and(|temp| temp < TEMP_MAX),
             Hit::Tile(2) => has_device && self.supports_extra("windFree"),
             Hit::Tile(3) => has_device && self.supports_extra("sleep"),
             Hit::Tile(4) => has_device && self.supports_extra("speed"),
@@ -840,7 +849,7 @@ impl Panel {
     }
 
     pub fn nudge(&mut self, step: i64) -> Vec<Action> {
-        if self.screen() != Screen::Main || self.device().is_none() {
+        if self.screen() != Screen::Main || self.device().is_none() || self.turbo() {
             return Vec::new();
         }
         let Some(temp) = self.temp() else { return Vec::new() };
@@ -1003,6 +1012,11 @@ impl Panel {
         self.draw_tiles(canvas, accent);
         self.draw_status(canvas, accent);
 
+        if self.turbo() {
+            // Turbo holds the setpoint, so the slider rests under the same veil as the steppers.
+            let (x, y, width, height) = SLIDER_HIT;
+            canvas.fill(&rounded(x - 2.0, y - 2.0, width + 4.0, height + 10.0, 12.0), &solid(p.background.alpha(0.55)));
+        }
         if loading {
             // Controls wait for the first reading, under a veil of the background.
             let veil = solid(p.background.alpha(0.6));
@@ -1257,12 +1271,13 @@ impl Panel {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
         let measured = self.field("potenciaFim").as_str().and_then(epoch_seconds).map(|end| (now - end).max(0) / 60);
         let energy = match measured {
-            Some(0) => format!("{total} · medido agora"),
+            Some(0) => format!("{total} · medido há menos de 1 min"),
             Some(minutes) => format!("{total} · medido há {minutes} min"),
             None => total,
         };
         canvas.text(&energy, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
         canvas.text(&shown(self.field("potencia"), " W"), Style::Semibold, 15.0, x + width - 18.0, cy + 5.0, p.text, Align::Right);
+        canvas.text("O ar envia a potência a cada 5 min, não é ao vivo.", Style::Regular, 11.5, x + 4.0, y + height + 17.0, p.faint, Align::Left);
 
         let rect @ (x, y, width, height) = settings_row(5);
         let cy = y + height / 2.0;
@@ -1480,6 +1495,11 @@ mod tests {
         view["device"]["extra"] = json!("speed");
         panel.set_view(view);
         assert_eq!(click(&mut panel, x, y), [Action::Set("extra", json!("off"))]);
+        // The unit holds the setpoint and the fan while turbo runs.
+        assert!(click(&mut panel, TEMP_UP.0, TEMP_UP.1).is_empty());
+        assert!(panel.wheel(120).is_empty());
+        let (x, y) = center(tile_rect(0));
+        assert!(click(&mut panel, x, y).is_empty());
     }
 
     #[test]
@@ -1549,12 +1569,16 @@ mod tests {
         heat["device"]["extra"] = json!("off");
         let mut off = demo_view();
         off["device"]["ligado"] = json!(false);
+        let mut turbo = demo_view();
+        turbo["device"]["extra"] = json!("speed");
+        turbo["device"]["vento"] = json!("turbo");
         let mut failed = demo_view();
         failed["error"] = json!({ "kind": "failed", "message": "x" });
         let cases = [
             ("windfree", demo_view()),
             ("vento", blade),
             ("quente", heat),
+            ("turbo", turbo),
             ("desligado", off),
             ("erro", failed),
             ("conectando", account_view("starting")),

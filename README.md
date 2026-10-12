@@ -51,10 +51,10 @@ target\release\ar-tray.exe --demo
 - **Temperatura**: botões − e +, o controle deslizante, a roda do mouse sobre o painel ou as setas do teclado.
 - **Modo**: um toque na fileira de modos. Aparecem só os modos que o aparelho aceita.
 - **Vento e Direção**: abrem uma lista com as opções do aparelho.
-- **WindFree, Sono e Turbo**: ligam e desligam direto. O Turbo é o resfriamento rápido da Samsung: roda por um tempo e volta sozinho para o ajuste anterior, sem mudar temperatura nem vento. Os três ficam apagados nos aparelhos que não têm.
+- **WindFree, Sono e Turbo**: ligam e desligam direto. O Turbo é o resfriamento rápido da Samsung: roda por um tempo e volta sozinho para o ajuste anterior, sem mudar temperatura nem vento. Enquanto ele roda, o aparelho trava a temperatura e o vento, e o painel deixa esses controles apagados. Os três ficam apagados nos aparelhos que não têm.
 - **Ajustes** (canto de baixo): luz do display, bipe, secagem automática, filtro, consumo, abrir com o Windows, trocar de aparelho e sair da conta Samsung.
 
-O consumo vem do relatório que o ar manda à SmartThings a cada 5 minutos, mais ou menos, então os ajustes mostram há quanto tempo a potência foi medida.
+O consumo não é ao vivo: o ar manda a potência à SmartThings a cada 5 minutos, então os ajustes mostram há quanto tempo ela foi medida.
 
 O painel segue o tema claro ou escuro do Windows. Quando o Windows inicia o app, ele fica só no ícone, sem abrir o painel.
 

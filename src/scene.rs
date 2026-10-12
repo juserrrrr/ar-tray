@@ -187,6 +187,8 @@ struct Face {
 
 struct Strand {
     path: Path,
+    /// Where the strand starts and ends on screen, so it fades along its own length.
+    span: ((f32, f32), (f32, f32)),
     dash: f32,
     gap: f32,
     pulse_width: f32,
@@ -211,9 +213,9 @@ pub struct Scene {
     top: Transform,
     holes: Path,
     strands: Vec<Strand>,
-    sheet: Path,
+    /// The soft body of air under the outlet: center and radii on screen.
+    plume: ((f32, f32), (f32, f32)),
     sway_origin: (f32, f32),
-    air_span: (f32, f32),
     motes: Vec<Mote>,
     glow: (f32, f32),
     mist: (f32, f32),
@@ -303,29 +305,30 @@ impl Scene {
         let (ox, ot, ow, oh) = OUTLET;
         let outlet_y = H - (ot + oh);
         let outlet_center = ox + ow / 2.0;
-        let count = 18;
-        let mut air_span = (f32::MAX, f32::MIN);
+        let count = 20;
         let strands = (0..count)
             .map(|index| {
                 let position = index as f32 / (count - 1) as f32;
-                let fade = 1.0 - (position - 0.5).abs() * 0.9;
+                let side = (position - 0.5).abs() * 2.0;
+                let fade = 1.0 - side * 0.45;
+                // The middle reaches furthest and the sides open out, so the air ends in a rounded fan.
+                let reach = (1.0 - 0.32 * side * side) * random.range(0.9, 1.08);
                 let x = ox + 6.0 + position * (ow - 12.0);
-                let spread = (x - outlet_center) * 0.45;
-                let bend = random.range(-5.0, 5.0);
-                let start = v3(x, outlet_y, D + 1.0);
+                let spread = (x - outlet_center) * 0.7 * reach;
+                let bend = random.range(-4.0, 4.0);
                 let points = [
-                    start,
-                    v3(x + bend, outlet_y - 20.0, D + 10.0),
-                    v3(x + spread * 0.5 - bend, outlet_y - 42.0, D + 20.0),
-                    v3(x + spread, outlet_y - 64.0, D + 28.0),
+                    v3(x, outlet_y, D + 1.0),
+                    v3(x + bend, outlet_y - 18.0 * reach, D + 9.0 * reach),
+                    v3(x + spread * 0.35 - bend, outlet_y - 50.0 * reach, D + 22.0 * reach),
+                    v3(x + spread, outlet_y - 84.0 * reach, D + 34.0 * reach),
                 ]
                 .map(|p| camera.project(p));
-                air_span = (air_span.0.min(points[0].1), air_span.1.max(points[3].1));
                 let mut builder = PathBuilder::new();
                 builder.move_to(points[0].0, points[0].1);
                 builder.cubic_to(points[1].0, points[1].1, points[2].0, points[2].1, points[3].0, points[3].1);
                 Strand {
                     path: builder.finish().expect("traço do ar"),
+                    span: (points[0], points[3]),
                     dash: random.range(22.0, 46.0),
                     gap: random.range(54.0, 104.0),
                     pulse_width: random.range(1.5, 3.0),
@@ -336,13 +339,7 @@ impl Scene {
                 }
             })
             .collect();
-        let sheet = polygon(&[
-            camera.project(v3(ox + 4.0, outlet_y, D + 1.0)),
-            camera.project(v3(ox + ow - 4.0, outlet_y, D + 1.0)),
-            camera.project(v3(ox + ow + 30.0, outlet_y - 64.0, D + 28.0)),
-            camera.project(v3(ox - 26.0, outlet_y - 64.0, D + 28.0)),
-        ])
-        .expect("lençol de ar");
+        let plume = (camera.project(v3(outlet_center, outlet_y - 34.0, D + 16.0)), (ow * 0.62, 40.0));
         let motes = (0..48)
             .map(|_| {
                 let x = random.range(10.0, W - 10.0);
@@ -359,9 +356,8 @@ impl Scene {
             top,
             holes,
             strands,
-            sheet,
+            plume,
             sway_origin: camera.project(v3(outlet_center, outlet_y, D + 1.0)),
-            air_span: (air_span.0 - 2.0, air_span.1),
             motes,
             glow: camera.project(v3(W * 0.5, -18.0, D + 20.0)),
             mist: camera.project(v3(W * 0.5, -6.0, D + 6.0)),
@@ -493,14 +489,17 @@ impl Scene {
         let vertical = if look.sway_vertical { 0.72 + 0.32 * swing(seconds, 4.6) } else { 1.0 };
         let skew = if look.sway_horizontal { (-13.0 + 26.0 * swing(seconds, 6.2)).to_radians().tan() } else { 0.0 };
         let sway = Transform::from_translate(ox, oy).pre_concat(Transform::from_row(1.0, 0.0, skew, vertical, 0.0, 0.0)).pre_translate(-ox, -oy);
-        // Air fades out as it falls away from the unit.
-        let (top, bottom) = self.air_span;
-        let fall = |opacity: f32| {
-            let color = look.tint.alpha(opacity * strength);
-            paint(linear((0.0, top), (0.0, bottom), &[(0.0, color), (0.5, color.alpha(0.6)), (1.0, color.alpha(0.0))]))
-        };
-        canvas.fill_at(&self.sheet, &fall(0.12), sway);
+        // A soft, rounded body of air under the outlet.
+        let ((px, py), (rx, ry)) = self.plume;
+        let body = look.tint.alpha(0.13 * strength);
+        canvas.fill_at(&ellipse(px, py, rx, ry), &paint(radial(px, py, rx, ry, &[(0.0, body), (0.55, body.alpha(0.45)), (1.0, body.alpha(0.0))])), sway);
         for strand in &self.strands {
+            // Each strand thins out along its own length and is gone by its tip.
+            let (from, to) = strand.span;
+            let fall = |opacity: f32| {
+                let color = look.tint.alpha(opacity * strength);
+                paint(linear(from, to, &[(0.0, color), (0.4, color.alpha(0.8)), (0.75, color.alpha(0.3)), (1.0, color.alpha(0.0))]))
+            };
             let base = Stroke { width: strand.line_width, line_cap: LineCap::Round, ..Stroke::default() };
             canvas.stroke_with(&strand.path, &fall(strand.line_opacity), &base, sway);
             let cycle = strand.dash + strand.gap;
