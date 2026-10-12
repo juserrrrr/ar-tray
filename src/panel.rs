@@ -261,6 +261,26 @@ impl Ease {
         }
         true
     }
+
+    /// Glides toward a target that may keep moving, such as a swinging blade.
+    fn follow(&mut self, target: f32, seconds: f32, tau: f32) {
+        self.target = target;
+        self.value += (target - self.value) * (1.0 - (-seconds / tau).exp());
+    }
+}
+
+/// How fast and how strong the air flows for a fan speed and mode.
+fn flow_for(fan: &str, mode: Option<&str>) -> (f32, f32) {
+    if mode == Some("dry") {
+        return (3.6, 0.5);
+    }
+    match fan {
+        "low" => (3.4, 0.6),
+        "medium" => (2.6, 0.75),
+        "high" => (1.8, 0.92),
+        "turbo" => (1.15, 1.0),
+        _ => (2.4, 0.85),
+    }
 }
 
 fn shown(value: &Value, unit: &str) -> String {
@@ -387,6 +407,12 @@ pub struct Panel {
     drag: Option<i64>,
     wheel: i32,
     power: Ease,
+    // The air direction, strength and pace glide to new settings instead of jumping.
+    air_pitch: Ease,
+    air_yaw: Ease,
+    strength: Ease,
+    flow_seconds: Ease,
+    flow_phase: f32,
     windfree: Ease,
     scene: Scene,
     clock: Instant,
@@ -410,6 +436,11 @@ impl Panel {
             drag: None,
             wheel: 0,
             power: Ease { value: 0.0, target: 0.0 },
+            air_pitch: Ease { value: scene::PITCH_REST, target: scene::PITCH_REST },
+            air_yaw: Ease { value: 0.0, target: 0.0 },
+            strength: Ease { value: 0.85, target: 0.85 },
+            flow_seconds: Ease { value: 2.4, target: 2.4 },
+            flow_phase: 0.0,
             windfree: Ease { value: 0.0, target: 0.0 },
             scene: Scene::new(),
             clock: Instant::now(),
@@ -459,6 +490,10 @@ impl Panel {
         self.frame = None;
         self.power.value = self.power.target;
         self.windfree.value = self.windfree.target;
+        self.air_pitch.value = self.air_pitch.target;
+        self.air_yaw.value = self.air_yaw.target;
+        self.strength.value = self.strength.target;
+        self.flow_seconds.value = self.flow_seconds.target;
         self.dirty = true;
     }
 
@@ -871,29 +906,34 @@ impl Panel {
         air || self.spinning() || self.dirty || self.power.value != self.power.target || self.windfree.value != self.windfree.target
     }
 
-    fn look(&self) -> scene::Look {
-        let fan = self.field("vento").as_str().unwrap_or("auto");
-        let (mut seconds, mut strength) = match fan {
-            "low" => (3.4, 0.6),
-            "medium" => (2.6, 0.75),
-            "high" => (1.8, 0.92),
-            "turbo" => (1.15, 1.0),
-            _ => (2.4, 0.85),
-        };
-        if self.mode() == Some("dry") {
-            (seconds, strength) = (3.6, 0.5);
-        }
+    /// Moves the air toward the current direction and fan speed, a little each frame.
+    fn steer_air(&mut self, seconds: f32, elapsed: f32) {
         let swing = self.field("oscilar").as_str().unwrap_or("fixed");
+        let pitch = if matches!(swing, "vertical" | "all") {
+            scene::PITCH_UP + (scene::PITCH_DOWN - scene::PITCH_UP) * scene::swing(seconds, 4.6)
+        } else {
+            scene::PITCH_REST
+        };
+        let yaw = if matches!(swing, "horizontal" | "all") { scene::YAW_SWING * (2.0 * scene::swing(seconds, 6.2) - 1.0) } else { 0.0 };
+        let (pace, strength) = flow_for(self.field("vento").as_str().unwrap_or("auto"), self.mode());
+        self.air_pitch.follow(pitch, elapsed, 0.6);
+        self.air_yaw.follow(yaw, elapsed, 0.6);
+        self.strength.follow(strength, elapsed, 0.5);
+        self.flow_seconds.follow(pace, elapsed, 0.5);
+        self.flow_phase = (self.flow_phase + elapsed / self.flow_seconds.value).fract();
+    }
+
+    fn look(&self) -> scene::Look {
         let connected = self.account_screen().is_none();
         scene::Look {
             tint: self.tint(),
             power: if connected { self.power.value } else { 0.0 },
             windfree: self.windfree.value,
             display: (connected && self.field("display") == "on").then(|| shown(self.field("temp"), "")),
-            flow_seconds: seconds,
-            flow_strength: strength,
-            sway_vertical: matches!(swing, "vertical" | "all"),
-            sway_horizontal: matches!(swing, "horizontal" | "all"),
+            flow_strength: self.strength.value,
+            flow_phase: self.flow_phase,
+            air_pitch: self.air_pitch.value,
+            air_yaw: self.air_yaw.value,
             light: self.palette.light,
         }
     }
@@ -904,6 +944,7 @@ impl Panel {
         let elapsed = now.duration_since(self.last_tick).as_secs_f32().min(0.1);
         self.last_tick = now;
         let moved = self.power.step(elapsed) | self.windfree.step(elapsed);
+        self.steer_air(self.clock.elapsed().as_secs_f32(), elapsed);
         let (width, height) = self.pixel_size();
         let scale = Transform::from_scale(self.scale, self.scale);
         let screen = self.screen();
@@ -932,6 +973,7 @@ impl Panel {
                 Screen::Main => {
                     let look = self.look();
                     let mut air = Canvas { pixmap: canvas.pixmap, transform: scale.pre_concat(Scene::transform(0.0, HERO_Y, HERO_HEIGHT, WIDTH)) };
+                    self.scene.draw_moving(&mut air, &look);
                     self.scene.draw_air(&mut air, &look, seconds);
                     if self.spinning() {
                         canvas.icon_turned("loader-circle", 26.0, STATUS_Y, 15.0, self.palette.muted, turn);
@@ -965,15 +1007,16 @@ impl Panel {
         self.hover == Some(hit) && self.enabled(hit)
     }
 
-    fn draw_hero(&mut self, canvas: &mut Canvas) {
+    /// The unit; on the main screen its blade and vanes move with the air on every frame instead.
+    fn draw_hero(&mut self, canvas: &mut Canvas, animated: bool) {
         let mut hero = Canvas { pixmap: canvas.pixmap, transform: canvas.transform.pre_concat(Scene::transform(0.0, HERO_Y, HERO_HEIGHT, WIDTH)) };
         let look = self.look();
-        self.scene.draw_unit(&mut hero, &look);
+        self.scene.draw_unit(&mut hero, &look, !animated);
     }
 
     fn draw_main(&mut self, canvas: &mut Canvas) {
         let p = self.palette;
-        self.draw_background(canvas, 0.08 * self.power.value);
+        self.draw_background(canvas, 0.03 * self.power.value);
         let fonts = fonts();
         let loading = self.device().is_none();
         let accent = self.accent();
@@ -990,7 +1033,7 @@ impl Panel {
             chip_x += width + 6.0;
         }
         self.draw_power(canvas);
-        self.draw_hero(canvas);
+        self.draw_hero(canvas, true);
 
         // Setpoint with steppers.
         for (hit, center, icon) in [(Hit::TempDown, TEMP_DOWN, "minus"), (Hit::TempUp, TEMP_UP, "plus")] {
@@ -1333,7 +1376,7 @@ impl Panel {
         self.draw_background(canvas, 0.0);
         canvas.text("Painel do Ar", Style::Semibold, 15.0, 18.0, 30.0, p.text, Align::Left);
         canvas.text("Conta Samsung SmartThings", Style::Regular, 12.0, 18.0, 47.0, p.muted, Align::Left);
-        self.draw_hero(canvas);
+        self.draw_hero(canvas, false);
 
         let (title, body): (&str, [&str; 2]) = match screen {
             Screen::SignIn => ("Conecte sua conta Samsung", ["O Painel do Ar usa o SmartThings para ler", "e controlar o seu ar-condicionado."]),
@@ -1607,6 +1650,16 @@ mod tests {
         render("vento", &cases[1].1, false, 1.5, &|_| {});
         render("detalhe", &cases[1].1, false, 3.0, &|_| {});
         render("detalhe-windfree", &cases[0].1, true, 3.0, &|_| {});
+        // Frames of the swinging air, for a look at the motion.
+        let mut both = demo_view();
+        both["device"]["extra"] = json!("off");
+        both["device"]["oscilar"] = json!("all");
+        for (frame, seconds) in [0.0f32, 1.6, 3.2, 4.6, 6.2].into_iter().enumerate() {
+            render(&format!("movimento-{frame}"), &both, false, 2.0, &move |panel| {
+                panel.steer_air(seconds, 10.0);
+                panel.flow_phase = seconds / 2.4;
+            });
+        }
         render("menu", &demo_view(), false, 1.0, &|panel| {
             let (x, y) = center(tile_rect(1));
             click(panel, x, y);

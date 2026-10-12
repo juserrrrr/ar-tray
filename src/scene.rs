@@ -1,8 +1,10 @@
 //! A Samsung WindFree wall unit in a three-quarter view, with its airflow, in a 320 by 150 scene.
 //!
 //! The unit is a real 3D shape: its side profile is extruded along the width and seen through a
-//! turned, slightly raised orthographic camera. Every face and detail comes from the same
-//! projection, so the parts meet where they should.
+//! turned, slightly raised orthographic camera. Every face, the blade, the vanes and the air come
+//! from the same projection, so the parts meet where they should and the air moves in 3D.
+
+use std::f32::consts::TAU;
 
 use tiny_skia::{LineCap, Path, PathBuilder, Stroke, StrokeDash, Transform};
 
@@ -33,7 +35,14 @@ const LIP_T: f32 = H * 0.64;
 const OUTLET: (f32, f32, f32, f32) = (W * 0.05, LIP_T + 3.0, W * 0.7, 7.5);
 const DISPLAY: (f32, f32, f32, f32) = (W * 0.8, LIP_T + 2.0, W * 0.155, 10.0);
 
-/// What the scene shows; the panel eases the numbers between states.
+/// The air's angle below horizontal: forward at the top of the swing, down at the bottom.
+pub const PITCH_UP: f32 = 25.0;
+pub const PITCH_DOWN: f32 = 72.0;
+pub const PITCH_REST: f32 = 52.0;
+/// How far the vanes turn the air to each side.
+pub const YAW_SWING: f32 = 28.0;
+
+/// What the scene shows; the panel eases every number, so changes glide instead of jumping.
 pub struct Look {
     pub tint: Rgba,
     /// 0 off, 1 on.
@@ -41,11 +50,22 @@ pub struct Look {
     /// 0 blade airflow, 1 WindFree.
     pub windfree: f32,
     pub display: Option<String>,
-    pub flow_seconds: f32,
+    /// Fan strength, 0.5 for low up to 1 for turbo.
     pub flow_strength: f32,
-    pub sway_vertical: bool,
-    pub sway_horizontal: bool,
+    /// Cycles of air travel so far, which keeps the motion smooth when the fan speed changes.
+    pub flow_phase: f32,
+    /// Air direction in degrees: below horizontal, and to the right.
+    pub air_pitch: f32,
+    pub air_yaw: f32,
     pub light: bool,
+}
+
+impl Look {
+    /// How far the blade hangs open: more as the air points down, none in WindFree.
+    fn blade(&self) -> f32 {
+        let tilt = ((self.air_pitch - PITCH_UP) / (PITCH_DOWN - PITCH_UP)).clamp(0.0, 1.0);
+        self.power * (1.0 - self.windfree) * (0.35 + 0.65 * tilt)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -94,11 +114,6 @@ impl Camera {
         (dot(self.across, p) + self.origin.0, dot(self.down, p) + self.origin.1)
     }
 
-    /// A direction on screen, without the origin.
-    fn shift(&self, d: V3) -> (f32, f32) {
-        (dot(self.across, d), dot(self.down, d))
-    }
-
     /// Maps plane coordinates (`s` along `along`, `t` along `step`) starting at `origin` into the scene.
     fn plane(&self, origin: V3, along: V3, step: V3) -> Transform {
         let (ox, oy) = self.project(origin);
@@ -143,6 +158,26 @@ fn line(from: (f32, f32), to: (f32, f32)) -> Option<Path> {
     builder.finish()
 }
 
+/// A smooth curve through the points (Catmull-Rom turned into cubic Béziers).
+fn through(points: &[(f32, f32)]) -> Option<Path> {
+    let mut builder = PathBuilder::new();
+    builder.move_to(points[0].0, points[0].1);
+    for index in 0..points.len() - 1 {
+        let before = points[index.saturating_sub(1)];
+        let (from, to) = (points[index], points[index + 1]);
+        let after = points[(index + 2).min(points.len() - 1)];
+        builder.cubic_to(
+            from.0 + (to.0 - before.0) / 6.0,
+            from.1 + (to.1 - before.1) / 6.0,
+            to.0 - (after.0 - from.0) / 6.0,
+            to.1 - (after.1 - from.1) / 6.0,
+            to.0,
+            to.1,
+        );
+    }
+    builder.finish()
+}
+
 /// The convex outline of a point set, for the silhouette under the faces.
 fn hull(mut points: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
     points.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
@@ -180,15 +215,23 @@ fn plastic(light: f32) -> Rgba {
     Rgba::hex(0x98a2ad).mix(Rgba::hex(0xffffff), light)
 }
 
+fn map(transform: Transform, x: f32, y: f32) -> (f32, f32) {
+    (transform.sx * x + transform.kx * y + transform.tx, transform.ky * x + transform.sy * y + transform.ty)
+}
+
 struct Face {
     path: Path,
     light: f32,
 }
 
+/// One strand of air: where it leaves the outlet and how it differs from its neighbors.
 struct Strand {
-    path: Path,
-    /// Where the strand starts and ends on screen, so it fades along its own length.
-    span: ((f32, f32), (f32, f32)),
+    along: f32,
+    spread: f32,
+    tilt: f32,
+    reach: f32,
+    wave: f32,
+    wave_phase: f32,
     dash: f32,
     gap: f32,
     pulse_width: f32,
@@ -207,17 +250,14 @@ struct Mote {
 }
 
 pub struct Scene {
+    camera: Camera,
     outline: Path,
     faces: Vec<Face>,
     front: Transform,
     top: Transform,
     holes: Path,
     strands: Vec<Strand>,
-    /// The soft body of air under the outlet: center and radii on screen.
-    plume: ((f32, f32), (f32, f32)),
-    sway_origin: (f32, f32),
     motes: Vec<Mote>,
-    glow: (f32, f32),
     mist: (f32, f32),
 }
 
@@ -243,7 +283,7 @@ fn smooth(t: f32) -> f32 {
 }
 
 /// 0 to 1 and back, like a CSS animation with `alternate`.
-fn swing(seconds: f32, period: f32) -> f32 {
+pub fn swing(seconds: f32, period: f32) -> f32 {
     let t = (seconds / period).rem_euclid(2.0);
     smooth(if t > 1.0 { 2.0 - t } else { t })
 }
@@ -300,68 +340,42 @@ impl Scene {
         }
         let holes = holes.finish().expect("furos");
 
-        // Air leaves the outlet, falls and drifts toward the room, all projected like the unit.
         let mut random = Random(0x005e_eda1);
-        let (ox, ot, ow, oh) = OUTLET;
-        let outlet_y = H - (ot + oh);
-        let outlet_center = ox + ow / 2.0;
-        let count = 20;
+        let count = 22;
         let strands = (0..count)
             .map(|index| {
-                let position = index as f32 / (count - 1) as f32;
-                let side = (position - 0.5).abs() * 2.0;
+                let along = index as f32 / (count - 1) as f32;
+                let side = (along - 0.5).abs() * 2.0;
                 let fade = 1.0 - side * 0.45;
-                // The middle reaches furthest and the sides open out, so the air ends in a rounded fan.
-                let reach = (1.0 - 0.32 * side * side) * random.range(0.9, 1.08);
-                let x = ox + 6.0 + position * (ow - 12.0);
-                let spread = (x - outlet_center) * 0.7 * reach;
-                let bend = random.range(-4.0, 4.0);
-                let points = [
-                    v3(x, outlet_y, D + 1.0),
-                    v3(x + bend, outlet_y - 18.0 * reach, D + 9.0 * reach),
-                    v3(x + spread * 0.35 - bend, outlet_y - 50.0 * reach, D + 22.0 * reach),
-                    v3(x + spread, outlet_y - 84.0 * reach, D + 34.0 * reach),
-                ]
-                .map(|p| camera.project(p));
-                let mut builder = PathBuilder::new();
-                builder.move_to(points[0].0, points[0].1);
-                builder.cubic_to(points[1].0, points[1].1, points[2].0, points[2].1, points[3].0, points[3].1);
                 Strand {
-                    path: builder.finish().expect("traço do ar"),
-                    span: (points[0], points[3]),
-                    dash: random.range(22.0, 46.0),
-                    gap: random.range(54.0, 104.0),
+                    along,
+                    // The strands fan out, and the middle ones reach furthest.
+                    spread: (along - 0.5) * 46.0 + random.range(-3.0, 3.0),
+                    tilt: random.range(-5.0, 5.0),
+                    reach: (1.0 - 0.3 * side * side) * random.range(0.88, 1.06),
+                    wave: random.range(1.2, 3.0),
+                    wave_phase: random.next(),
+                    dash: random.range(20.0, 42.0),
+                    gap: random.range(50.0, 96.0),
                     pulse_width: random.range(1.5, 3.0),
-                    pulse_opacity: random.range(0.35, 0.7) * fade,
+                    pulse_opacity: random.range(0.4, 0.75) * fade,
                     line_width: random.range(0.9, 2.0),
                     line_opacity: random.range(0.08, 0.18) * fade,
                     phase: random.next(),
                 }
             })
             .collect();
-        let plume = (camera.project(v3(outlet_center, outlet_y - 34.0, D + 16.0)), (ow * 0.62, 40.0));
         let motes = (0..48)
             .map(|_| {
                 let x = random.range(10.0, W - 10.0);
                 let start = camera.project(v3(x, random.range(-2.0, 4.0), D - 6.0));
-                let travel = camera.shift(v3((x - W / 2.0) * 0.1 + random.range(-5.0, 5.0), -random.range(20.0, 52.0), random.range(10.0, 26.0)));
+                let drift = v3((x - W / 2.0) * 0.1 + random.range(-5.0, 5.0), -random.range(20.0, 52.0), random.range(10.0, 26.0));
+                let travel = (dot(camera.across, drift), dot(camera.down, drift));
                 Mote { start, travel, radius: random.range(0.8, 1.7), seconds: random.range(3.6, 7.2), phase: random.next() }
             })
             .collect();
 
-        Self {
-            outline,
-            faces,
-            front,
-            top,
-            holes,
-            strands,
-            plume,
-            sway_origin: camera.project(v3(outlet_center, outlet_y, D + 1.0)),
-            motes,
-            glow: camera.project(v3(W * 0.5, -18.0, D + 20.0)),
-            mist: camera.project(v3(W * 0.5, -6.0, D + 6.0)),
-        }
+        Self { camera, outline, faces, front, top, holes, strands, motes, mist: camera.project(v3(W * 0.5, -6.0, D + 6.0)) }
     }
 
     /// Maps the scene into a box of the panel.
@@ -371,14 +385,12 @@ impl Scene {
         Transform::from_translate(left, y).pre_scale(k, k).pre_translate(0.0, -TOP)
     }
 
-    /// The still part: glow, shadow, body, grille, perforations, lip, blade and display.
-    pub fn draw_unit(&mut self, canvas: &mut Canvas, look: &Look) {
+    /// The still part of the unit. The vanes and blade move, so they come from `draw_moving`
+    /// unless `with_blade` asks for them here, for screens without animation.
+    pub fn draw_unit(&mut self, canvas: &mut Canvas, look: &Look, with_blade: bool) {
         let on = look.power;
-        let glow = look.tint.alpha(if look.light { 0.16 } else { 0.22 } * on);
-        let (gx, gy) = self.glow;
-        canvas.fill(&ellipse(gx, gy, 132.0, 32.0), &paint(radial(gx, gy, 132.0, 32.0, &[(0.0, glow), (1.0, glow.alpha(0.0))])));
 
-        // A soft shadow on the wall, down and to the right of the unit.
+        // A soft neutral shadow on the wall, down and to the right of the unit.
         let wall = if look.light { 0.035 } else { 0.11 };
         for (dx, dy, alpha) in [(9.0, 12.0, 0.4), (6.0, 8.0, 0.7), (3.0, 4.0, 1.0)] {
             canvas.fill_at(&self.outline, &solid(Rgba(0, 0, 0, (255.0 * wall * alpha) as u8)), Transform::from_translate(dx, dy));
@@ -426,7 +438,7 @@ impl Scene {
             front,
         );
 
-        // The lower lip with the outlet, its vanes and the blade, and the display window.
+        // The lower lip with the dark outlet, and the display window.
         let lip_height = H - CURVE_Y - LIP_T + 3.0;
         canvas.fill_at(
             &rounded(2.0, LIP_T, W - 4.0, lip_height, 4.0),
@@ -436,18 +448,6 @@ impl Scene {
         canvas.stroke_with(&rounded(2.3, LIP_T + 0.3, W - 4.6, lip_height - 0.6, 3.7), &solid(dim(Rgba::hex(0xd1d7dd))), &thin(0.6), front);
         let (ox, ot, ow, oh) = OUTLET;
         canvas.fill_at(&rounded(ox, ot, ow, oh, oh / 2.0), &paint(linear((0.0, ot), (0.0, ot + oh), &[(0.0, Rgba::hex(0x090b0e)), (1.0, Rgba::hex(0x2b3139))])), front);
-        for vane in 1..18 {
-            let x = ox + ow * vane as f32 / 18.0;
-            if let Some(path) = line((x, ot + 1.5), (x, ot + oh - 1.5)) {
-                canvas.stroke_with(&path, &solid(Rgba::hex(0x3d444d)), &thin(0.8), front);
-            }
-        }
-        // The blade tilts down from the bottom of the outlet for normal airflow and stays shut in WindFree.
-        let open = on * (1.0 - look.windfree);
-        let hinge = ot + oh;
-        let blade = front.pre_translate(0.0, hinge).pre_scale(1.0, 1.0 - 0.5 * open).pre_translate(0.0, -hinge + (oh + 1.0) * open);
-        canvas.fill_at(&rounded(ox, ot, ow, oh, oh / 2.0), &paint(linear((0.0, ot), (0.0, ot + oh), &[(0.0, dim(Rgba::hex(0xffffff))), (1.0, dim(Rgba::hex(0xe4e8ec)))])), blade);
-        canvas.stroke_with(&rounded(ox + 0.3, ot + 0.3, ow - 0.6, oh - 0.6, oh / 2.0 - 0.3), &solid(dim(Rgba::hex(0xcbd2d9))), &thin(0.5), blade);
 
         let (dx, dy, dw, dh) = DISPLAY;
         canvas.fill_at(&rounded(dx, dy, dw, dh, 2.5), &paint(linear((0.0, dy), (0.0, dy + dh), &[(0.0, dim(Rgba::hex(0xe2e6ea))), (1.0, dim(Rgba::hex(0xeef1f4)))])), front);
@@ -470,13 +470,36 @@ impl Scene {
 
         // A hairline around the unit keeps it crisp on both themes.
         canvas.stroke(&self.outline, &solid(Rgba(0, 0, 0, if look.light { 30 } else { 50 })), 0.7);
+        if with_blade {
+            self.draw_moving(canvas, look);
+        }
+    }
+
+    /// The vanes inside the outlet turn the air sideways, and the blade below tilts it down.
+    pub fn draw_moving(&self, canvas: &mut Canvas, look: &Look) {
+        let front = self.front;
+        let dim = |color: Rgba| color.mix(Rgba(24, 26, 30, 255), 0.14 * (1.0 - look.power));
+        let thin = |width: f32| Stroke { width, line_cap: LineCap::Round, ..Stroke::default() };
+        let (ox, ot, ow, oh) = OUTLET;
+        let lean = look.air_yaw.to_radians().tan() * oh * 0.5;
+        for vane in 1..18 {
+            let x = ox + ow * vane as f32 / 18.0;
+            if let Some(path) = line((x - lean, ot + 1.4), (x + lean, ot + oh - 1.4)) {
+                canvas.stroke_with(&path, &solid(Rgba::hex(0x434a54)), &thin(0.9), front);
+            }
+        }
+        let open = look.blade();
+        let hinge = ot + oh;
+        let blade = front.pre_translate(0.0, hinge).pre_scale(1.0, 1.0 - 0.5 * open).pre_translate(0.0, -hinge + (oh + 1.0) * open);
+        canvas.fill_at(&rounded(ox, ot, ow, oh, oh / 2.0), &paint(linear((0.0, ot), (0.0, ot + oh), &[(0.0, dim(Rgba::hex(0xffffff))), (1.0, dim(Rgba::hex(0xe4e8ec)))])), blade);
+        canvas.stroke_with(&rounded(ox + 0.3, ot + 0.3, ow - 0.6, oh - 0.6, oh / 2.0 - 0.3), &solid(dim(Rgba::hex(0xcbd2d9))), &thin(0.5), blade);
     }
 
     /// The moving air, drawn on top of the still frame every tick.
     pub fn draw_air(&self, canvas: &mut Canvas, look: &Look, seconds: f32) {
         let blade = look.power * (1.0 - look.windfree) * look.flow_strength;
         if blade > 0.01 {
-            self.draw_blade_air(canvas, look, seconds, blade);
+            self.draw_blade_air(canvas, look, blade);
         }
         let seep = look.power * look.windfree;
         if seep > 0.01 {
@@ -484,40 +507,55 @@ impl Scene {
         }
     }
 
-    fn draw_blade_air(&self, canvas: &mut Canvas, look: &Look, seconds: f32, strength: f32) {
-        let (ox, oy) = self.sway_origin;
-        let vertical = if look.sway_vertical { 0.72 + 0.32 * swing(seconds, 4.6) } else { 1.0 };
-        let skew = if look.sway_horizontal { (-13.0 + 26.0 * swing(seconds, 6.2)).to_radians().tan() } else { 0.0 };
-        let sway = Transform::from_translate(ox, oy).pre_concat(Transform::from_row(1.0, 0.0, skew, vertical, 0.0, 0.0)).pre_translate(-ox, -oy);
-        // A soft, rounded body of air under the outlet.
-        let ((px, py), (rx, ry)) = self.plume;
-        let body = look.tint.alpha(0.13 * strength);
-        canvas.fill_at(&ellipse(px, py, rx, ry), &paint(radial(px, py, rx, ry, &[(0.0, body), (0.55, body.alpha(0.45)), (1.0, body.alpha(0.0))])), sway);
+    /// Air leaves the outlet in the blade and vane direction, sinks as it cools the room and
+    /// ripples on its way, each strand fading out before its tip.
+    fn draw_blade_air(&self, canvas: &mut Canvas, look: &Look, strength: f32) {
+        let (ox, ot, ow, oh) = OUTLET;
+        let outlet_y = H - (ot + oh);
+        let length = 44.0 + 30.0 * look.flow_strength;
         for strand in &self.strands {
-            // Each strand thins out along its own length and is gone by its tip.
-            let (from, to) = strand.span;
+            let yaw = (look.air_yaw + strand.spread).to_radians();
+            let pitch = (look.air_pitch + strand.tilt).to_radians();
+            let direction = v3(pitch.cos() * yaw.sin(), -pitch.sin(), pitch.cos() * yaw.cos());
+            let side = v3(yaw.cos(), 0.0, -yaw.sin());
+            let reach = length * strand.reach;
+            let start = v3(ox + 5.0 + strand.along * (ow - 10.0), outlet_y + 0.5, D + 1.0);
+            let points: Vec<(f32, f32)> = (0..=7)
+                .map(|step| {
+                    let s = step as f32 / 7.0;
+                    let ripple = (TAU * (0.9 * s - look.flow_phase * 0.6 + strand.wave_phase)).sin() * strand.wave * s;
+                    let sink = 0.16 * reach * s * s;
+                    self.camera.project(v3(
+                        start.x + direction.x * reach * s + side.x * ripple,
+                        start.y + direction.y * reach * s - sink + ripple * 0.2,
+                        start.z + direction.z * reach * s + side.z * ripple,
+                    ))
+                })
+                .collect();
+            let Some(path) = through(&points) else { continue };
+            let (from, to) = (points[0], points[points.len() - 1]);
             let fall = |opacity: f32| {
                 let color = look.tint.alpha(opacity * strength);
                 paint(linear(from, to, &[(0.0, color), (0.4, color.alpha(0.8)), (0.75, color.alpha(0.3)), (1.0, color.alpha(0.0))]))
             };
             let base = Stroke { width: strand.line_width, line_cap: LineCap::Round, ..Stroke::default() };
-            canvas.stroke_with(&strand.path, &fall(strand.line_opacity), &base, sway);
+            canvas.stroke_with(&path, &fall(strand.line_opacity), &base, Transform::identity());
             let cycle = strand.dash + strand.gap;
-            let progress = (seconds / look.flow_seconds + strand.phase).fract();
+            let progress = (look.flow_phase + strand.phase).fract();
             let dash = StrokeDash::new(vec![strand.dash, strand.gap], -cycle * progress);
             // A wide faint pass under the bright one stands in for a glow.
-            for (widen, opacity) in [(3.2, 0.22), (1.0, 1.0)] {
+            for (widen, opacity) in [(3.0, 0.2), (1.0, 1.0)] {
                 let pulse = Stroke { width: strand.pulse_width * widen, line_cap: LineCap::Round, dash: dash.clone(), ..Stroke::default() };
-                canvas.stroke_with(&strand.path, &fall(strand.pulse_opacity * opacity), &pulse, sway);
+                canvas.stroke_with(&path, &fall(strand.pulse_opacity * opacity), &pulse, Transform::identity());
             }
         }
     }
 
     /// WindFree: the blade stays shut and the air seeps out as a slow mist.
     fn draw_seep(&self, canvas: &mut Canvas, look: &Look, seconds: f32, strength: f32) {
-        let mist = look.tint.alpha(0.15 * strength);
+        let mist = look.tint.alpha(0.07 * strength);
         let (mx, my) = self.mist;
-        canvas.fill(&ellipse(mx, my + 10.0, 112.0, 16.0), &paint(radial(mx, my + 10.0, 112.0, 16.0, &[(0.0, mist), (1.0, mist.alpha(0.0))])));
+        canvas.fill(&ellipse(mx, my + 8.0, 96.0, 12.0), &paint(radial(mx, my + 8.0, 96.0, 12.0, &[(0.0, mist), (1.0, mist.alpha(0.0))])));
         for mote in &self.motes {
             let t = (seconds / mote.seconds + mote.phase).fract();
             let travel = smooth(t);
@@ -528,10 +566,6 @@ impl Scene {
             canvas.fill(&ellipse(x, y, radius, radius), &paint(radial(x, y, radius, radius, &[(0.0, color), (0.5, color.alpha(0.6)), (1.0, color.alpha(0.0))])));
         }
     }
-}
-
-fn map(transform: Transform, x: f32, y: f32) -> (f32, f32) {
-    (transform.sx * x + transform.kx * y + transform.tx, transform.ky * x + transform.sy * y + transform.ty)
 }
 
 #[cfg(test)]
@@ -557,5 +591,25 @@ mod tests {
         assert!(camera.faces_us(v3(0.0, 1.0, 0.0)) > 0.0);
         assert!(camera.faces_us(v3(-1.0, 0.0, 0.0)) > 0.0);
         assert!(camera.faces_us(v3(1.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn the_blade_follows_the_air_and_shuts_for_windfree() {
+        let mut look = Look {
+            tint: Rgba::hex(0x3d8bff),
+            power: 1.0,
+            windfree: 0.0,
+            display: None,
+            flow_strength: 0.85,
+            flow_phase: 0.0,
+            air_pitch: PITCH_UP,
+            air_yaw: 0.0,
+            light: false,
+        };
+        let forward = look.blade();
+        look.air_pitch = PITCH_DOWN;
+        assert!(look.blade() > forward);
+        look.windfree = 1.0;
+        assert_eq!(look.blade(), 0.0);
     }
 }
