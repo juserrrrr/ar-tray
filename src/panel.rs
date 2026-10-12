@@ -9,7 +9,7 @@ use crate::gfx::{Align, Canvas, Rgba, Style, circle, fonts, paint, radial, round
 use crate::scene::{self, Scene};
 
 pub const WIDTH: f32 = 372.0;
-pub const HEIGHT: f32 = 600.0;
+pub const HEIGHT: f32 = 624.0;
 const TEMP_MIN: i64 = 16;
 const TEMP_MAX: i64 = 30;
 
@@ -89,9 +89,11 @@ const TEMP_UP: (f32, f32) = (330.0, CLIMATE_Y);
 const SLIDER: (f32, f32, f32) = (34.0, 338.0, 330.0);
 const SLIDER_HIT: (f32, f32, f32, f32) = (18.0, 312.0, 336.0, 36.0);
 const MODES: (f32, f32, f32, f32) = (14.0, 370.0, 344.0, 62.0);
+/// Fan and direction tiles, then the WindFree, sleep and turbo switches.
 const TILES_Y: f32 = 444.0;
-const TILE: (f32, f32, f32) = (80.0, 84.0, 8.0);
-const STATUS_Y: f32 = 568.0;
+const SWITCHES_Y: f32 = 508.0;
+const SWITCH_HEIGHT: f32 = 46.0;
+const STATUS_Y: f32 = 592.0;
 const SETTINGS_BUTTON: (f32, f32) = (336.0, STATUS_Y);
 const BACK_BUTTON: (f32, f32) = (32.0, 34.0);
 const ROW_HEIGHT: f32 = 54.0;
@@ -277,6 +279,11 @@ fn is_sleep(extra: Option<&str>) -> bool {
     matches!(extra, Some("sleep" | "windFreeSleep"))
 }
 
+/// Samsung's fast turbo, which runs for a while and then returns to the previous setting.
+fn is_turbo(extra: Option<&str>) -> bool {
+    extra == Some("speed")
+}
+
 fn extra_for(windfree: bool, sleep: bool) -> &'static str {
     match (windfree, sleep) {
         (false, false) => "off",
@@ -300,7 +307,7 @@ fn unconfirmed_name(key: &str) -> &str {
         "temp" => "a temperatura",
         "modo" => "o modo",
         "vento" => "o vento",
-        "extra" => "o WindFree e o sono",
+        "extra" => "o WindFree, o sono ou o turbo",
         "oscilar" => "a direção",
         "display" => "a luz do display",
         "bipe" => "o bipe",
@@ -328,9 +335,30 @@ fn slider_value(x: f32) -> i64 {
     (TEMP_MIN as f32 + ratio.clamp(0.0, 1.0) * (TEMP_MAX - TEMP_MIN) as f32).round() as i64
 }
 
+/// Tiles 0 and 1 open the fan and direction menus; 2 to 4 switch WindFree, sleep and turbo.
 fn tile_rect(index: usize) -> (f32, f32, f32, f32) {
-    let (width, height, gap) = TILE;
-    (14.0 + index as f32 * (width + gap), TILES_Y, width, height)
+    match index {
+        0 | 1 => (14.0 + index as f32 * 176.0, TILES_Y, 168.0, 56.0),
+        _ => {
+            let width = (344.0 - 16.0) / 3.0;
+            (14.0 + (index - 2) as f32 * (width + 8.0), SWITCHES_Y, width, SWITCH_HEIGHT)
+        }
+    }
+}
+
+/// Seconds since 1970 for an ISO 8601 UTC time such as 2026-10-12T00:24:03Z.
+fn epoch_seconds(iso: &str) -> Option<i64> {
+    let number = |range: std::ops::Range<usize>| iso.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    // Days from the civil calendar, after Howard Hinnant's algorithm.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
 fn settings_row(index: usize) -> (f32, f32, f32, f32) {
@@ -597,6 +625,7 @@ impl Panel {
             Hit::TempUp => has_device && self.temp().is_some_and(|temp| temp < TEMP_MAX),
             Hit::Tile(2) => has_device && self.supports_extra("windFree"),
             Hit::Tile(3) => has_device && self.supports_extra("sleep"),
+            Hit::Tile(4) => has_device && self.supports_extra("speed"),
             Hit::Toggle(index) if index < 3 => has_device,
             _ => true,
         }
@@ -649,7 +678,7 @@ impl Panel {
         if let Some(index) = (0..modes).find(|&index| inside(x, y, self.mode_rect(index, modes))) {
             return Some(Hit::Mode(index));
         }
-        if let Some(index) = (0..4).find(|&index| inside(x, y, tile_rect(index))) {
+        if let Some(index) = (0..5).find(|&index| inside(x, y, tile_rect(index))) {
             return Some(Hit::Tile(index));
         }
         let status = self.status();
@@ -743,6 +772,7 @@ impl Panel {
             },
             Hit::Tile(2) => Action::Set("extra", json!(extra_for(!windfree, sleep))),
             Hit::Tile(3) => Action::Set("extra", json!(extra_for(windfree, !sleep))),
+            Hit::Tile(4) => Action::Set("extra", json!(if is_turbo(extra) { "off" } else { "speed" })),
             Hit::Settings => {
                 self.settings = true;
                 return Vec::new();
@@ -976,7 +1006,7 @@ impl Panel {
         if loading {
             // Controls wait for the first reading, under a veil of the background.
             let veil = solid(p.background.alpha(0.6));
-            for rect in [(18.0, CLIMATE_Y - 24.0, 336.0, 48.0), SLIDER_HIT, MODES, (14.0, TILES_Y, 344.0, TILE.1)] {
+            for rect in [(18.0, CLIMATE_Y - 24.0, 336.0, 48.0), SLIDER_HIT, MODES, (14.0, TILES_Y, 344.0, SWITCHES_Y + SWITCH_HEIGHT - TILES_Y)] {
                 canvas.fill(&rounded(rect.0 - 2.0, rect.1 - 2.0, rect.2 + 4.0, rect.3 + 4.0, 16.0), &veil);
             }
         }
@@ -1050,35 +1080,38 @@ impl Panel {
             choices.iter().find(|choice| Some(choice.value) == value).map_or_else(|| value.unwrap_or("-").to_owned(), |choice| choice.short.to_owned())
         };
         let swing_icon = SWING_CHOICES.iter().find(|choice| Some(choice.value) == swing).map_or("minus", |choice| choice.icon);
-        let on_off = |active: bool| if active { "Ligado" } else { "Desligado" }.to_owned();
-        let tiles = [
-            ("fan", "Vento", short(&FAN_CHOICES, fan), None),
-            (swing_icon, "Direção", short(&SWING_CHOICES, swing), None),
-            ("feather", "WindFree", on_off(is_windfree(extra)), Some(is_windfree(extra))),
-            ("moon", "Sono", on_off(is_sleep(extra)), Some(is_sleep(extra))),
-        ];
-        for (index, (icon, label, value, checked)) in tiles.into_iter().enumerate() {
+
+        // Fan and direction: wide tiles that open their option menus.
+        for (index, (icon, label, value)) in [("fan", "Vento", short(&FAN_CHOICES, fan)), (swing_icon, "Direção", short(&SWING_CHOICES, swing))].into_iter().enumerate() {
             let (x, y, width, height) = tile_rect(index);
             let enabled = self.enabled(Hit::Tile(index));
             let expanded = self.menu.is_some_and(|menu| menu.tile() == index);
-            let active = checked == Some(true) && enabled;
             let fill = if expanded || self.hovered(Hit::Tile(index)) { p.card_hover } else { p.card };
-            canvas.card(x, y, width, height, 16.0, fill, if active { accent.alpha(0.55) } else { p.line });
+            canvas.card(x, y, width, height, 16.0, fill, p.line);
             let dim = |color: Rgba| if enabled { color } else { color.alpha(0.4) };
-            // The icon sits on a small badge that fills with the accent when the option is on.
-            let badge = if active { accent } else { p.track.alpha(if p.light { 0.6 } else { 0.8 }) };
-            canvas.fill(&rounded(x + 10.0, y + 10.0, 30.0, 30.0, 10.0), &solid(dim(badge)));
-            canvas.icon(icon, x + 25.0, y + 25.0, 16.0, dim(if active { on_accent(accent) } else { p.text }));
-            match checked {
-                None => canvas.icon_turned("chevron-up", x + width - 15.0, y + 25.0, 13.0, dim(p.faint), if expanded { 180.0 } else { 0.0 }),
-                Some(on) => {
-                    let dot = if on && enabled { accent } else { p.track };
-                    canvas.fill(&circle(x + width - 15.0, y + 25.0, 3.5), &solid(dot));
-                }
-            }
-            canvas.text(label, Style::Regular, 11.5, x + 11.0, y + 60.0, dim(p.muted), Align::Left);
+            canvas.fill(&rounded(x + 10.0, y + 12.0, 32.0, 32.0, 10.0), &solid(dim(p.track.alpha(if p.light { 0.6 } else { 0.8 }))));
+            canvas.icon(icon, x + 26.0, y + 28.0, 16.0, dim(p.text));
+            canvas.text(label, Style::Regular, 11.5, x + 52.0, y + 24.0, dim(p.muted), Align::Left);
             let value = if self.device().is_some() { value } else { "-".into() };
-            canvas.text(&fonts.fit(&value, Style::Semibold, 13.5, width - 16.0), Style::Semibold, 13.5, x + 11.0, y + 76.0, dim(p.text), Align::Left);
+            canvas.text(&fonts.fit(&value, Style::Semibold, 14.0, width - 82.0), Style::Semibold, 14.0, x + 52.0, y + 42.0, dim(p.text), Align::Left);
+            canvas.icon_turned("chevron-up", x + width - 18.0, y + 28.0, 14.0, dim(p.faint), if expanded { 180.0 } else { 0.0 });
+        }
+
+        // WindFree, sleep and turbo: switches that fill with the accent while they run.
+        let switches = [("feather", "WindFree", is_windfree(extra)), ("moon", "Sono", is_sleep(extra)), ("rocket", "Turbo", is_turbo(extra))];
+        for (offset, (icon, label, on)) in switches.into_iter().enumerate() {
+            let index = offset + 2;
+            let (x, y, width, height) = tile_rect(index);
+            let enabled = self.enabled(Hit::Tile(index));
+            let active = on && enabled;
+            let hovered = self.hovered(Hit::Tile(index));
+            let fill = if active { accent } else if hovered { p.card_hover } else { p.card };
+            canvas.card(x, y, width, height, 14.0, fill, if active { accent } else { p.line });
+            let ink = if active { on_accent(accent) } else if enabled { p.text } else { p.text.alpha(0.4) };
+            let label_width = fonts.measure(label, Style::Medium, 13.5);
+            let start = x + width / 2.0 - (label_width + 24.0) / 2.0;
+            canvas.icon(icon, start + 8.0, y + height / 2.0, 16.0, ink);
+            canvas.text(label, Style::Medium, 13.5, start + 24.0, y + height / 2.0 + 5.0, ink, Align::Left);
         }
     }
 
@@ -1219,7 +1252,15 @@ impl Panel {
         let cy = y + height / 2.0;
         canvas.icon("zap", x + 24.0, cy, 18.0, p.muted);
         canvas.text("Consumo", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
-        let energy = self.field("energia").as_f64().map_or_else(|| "-".to_owned(), |kwh| format!("{} kWh no total", thousands(kwh.round() as i64)));
+        let total = self.field("energia").as_f64().map_or_else(|| "-".to_owned(), |kwh| format!("{} kWh no total", thousands(kwh.round() as i64)));
+        // The unit sends power every few minutes, so the reading says how old it is.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
+        let measured = self.field("potenciaFim").as_str().and_then(epoch_seconds).map(|end| (now - end).max(0) / 60);
+        let energy = match measured {
+            Some(0) => format!("{total} · medido agora"),
+            Some(minutes) => format!("{total} · medido há {minutes} min"),
+            None => total,
+        };
         canvas.text(&energy, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
         canvas.text(&shown(self.field("potencia"), " W"), Style::Semibold, 15.0, x + width - 18.0, cy + 5.0, p.text, Align::Right);
 
@@ -1356,7 +1397,7 @@ mod tests {
                 "nome": "Ar da sala", "ligado": true, "temp": 23, "modo": "cool", "vento": "auto", "extra": "windFree",
                 "oscilar": "vertical", "display": "on", "bipe": "off", "autoclean": "on", "filtroAlerta": 500, "filtroUso": 37,
                 "filtroStatus": "normal", "potencia": 640, "energia": 812.4, "ambiente": 27, "umidade": 58,
-                "modos": ["cool", "dry", "wind", "auto", "heat"], "extras": ["off", "windFree", "windFreeSleep", "sleep"],
+                "modos": ["cool", "dry", "wind", "auto", "heat"], "extras": ["off", "windFree", "windFreeSleep", "sleep", "speed"],
             },
             "syncing": false, "held": [], "error": null, "updatedAt": 0, "account": "ready", "devices": [], "loginError": false,
         })
@@ -1426,6 +1467,27 @@ mod tests {
         panel.set_view(view);
         let (x, y) = center(tile_rect(2));
         assert!(click(&mut panel, x, y).is_empty());
+    }
+
+    #[test]
+    fn turbo_switches_the_fast_mode_on_and_off() {
+        let mut panel = Panel::new();
+        let mut view = demo_view();
+        view["device"]["extras"] = json!(["off", "windFree", "sleep", "speed"]);
+        panel.set_view(view.clone());
+        let (x, y) = center(tile_rect(4));
+        assert_eq!(click(&mut panel, x, y), [Action::Set("extra", json!("speed"))]);
+        view["device"]["extra"] = json!("speed");
+        panel.set_view(view);
+        assert_eq!(click(&mut panel, x, y), [Action::Set("extra", json!("off"))]);
+    }
+
+    #[test]
+    fn reads_report_times() {
+        assert_eq!(epoch_seconds("1970-01-02T00:00:00Z"), Some(86_400));
+        assert_eq!(epoch_seconds("2000-03-01T00:00:00Z"), Some(951_868_800));
+        assert_eq!(epoch_seconds("2026-10-12T00:24:03.159Z"), Some(1_791_764_643));
+        assert_eq!(epoch_seconds("ontem"), None);
     }
 
     #[test]

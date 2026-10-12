@@ -1,6 +1,10 @@
-//! A Samsung WindFree wall unit and its airflow, drawn in a 320 by 150 scene.
+//! A Samsung WindFree wall unit in a three-quarter view, with its airflow, in a 320 by 150 scene.
+//!
+//! The unit is a real 3D shape: its side profile is extruded along the width and seen through a
+//! turned, slightly raised orthographic camera. Every face and detail comes from the same
+//! projection, so the parts meet where they should.
 
-use tiny_skia::{LineCap, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, StrokeDash, Transform};
+use tiny_skia::{LineCap, Path, PathBuilder, Stroke, StrokeDash, Transform};
 
 use crate::gfx::{Align, Canvas, Rgba, Style, ellipse, linear, paint, radial, rounded, solid};
 
@@ -9,21 +13,25 @@ pub const HEIGHT: f32 = 150.0;
 /// The scene's top in the drawing, which starts above the unit.
 const TOP: f32 = 12.0;
 
-// The unit follows the WindFree Connect front: a 2.8 to 1 box with the intake grille on
-// top, a smooth upper band, the perforated field and a lower lip with the blade and display.
-const BODY: (f32, f32, f32, f32) = (44.0, 16.0, 232.0, 82.0);
-/// Where the smooth upper band ends and where the lower lip starts.
-const BAND_Y: f32 = 31.0;
-const LIP_Y: f32 = 78.0;
-/// The micro-perforated field that WindFree breathes through.
-const FIELD: (f32, f32, f32, f32) = (50.0, 33.0, 220.0, 43.0);
-const HOLE_PITCH: f32 = 2.2;
-/// The blade covers the outlet on the left of the lip; the display window sits on the right.
-const BLADE: (f32, f32, f32, f32) = (54.0, 83.0, 176.0, 10.0);
-const DISPLAY: (f32, f32, f32, f32) = (236.0, 82.0, 32.0, 12.0);
-const SWAY_ORIGIN: (f32, f32) = (142.0, 99.0);
-const AIR_TOP: f32 = 100.0;
-const AIR_BOTTOM: f32 = 176.0;
+// The unit in world units: width, height and depth of a 12000 BTU wall unit (820 x 299 x 215 mm).
+const W: f32 = 220.0;
+const H: f32 = 79.0;
+const D: f32 = 57.0;
+/// The camera turns toward the left end and looks down a little.
+const YAW: f32 = 24.0;
+const PITCH: f32 = 12.0;
+const TOP_RADIUS: f32 = 6.0;
+/// Where the front starts curving back into the underside, and how deep that curve is.
+const CURVE_Y: f32 = 14.0;
+const CURVE_DEPTH: f32 = 13.0;
+
+// Front features in front-plane units: along the width, and down from the top edge.
+const BAND_T: f32 = H * 0.2;
+const FIELD: (f32, f32, f32, f32) = (8.0, H * 0.235, W - 16.0, H * 0.375);
+const HOLE_PITCH: f32 = 1.9;
+const LIP_T: f32 = H * 0.64;
+const OUTLET: (f32, f32, f32, f32) = (W * 0.05, LIP_T + 3.0, W * 0.7, 7.5);
+const DISPLAY: (f32, f32, f32, f32) = (W * 0.8, LIP_T + 2.0, W * 0.155, 10.0);
 
 /// What the scene shows; the panel eases the numbers between states.
 pub struct Look {
@@ -40,6 +48,143 @@ pub struct Look {
     pub light: bool,
 }
 
+#[derive(Clone, Copy)]
+struct V3 {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+const fn v3(x: f32, y: f32, z: f32) -> V3 {
+    V3 { x, y, z }
+}
+
+fn dot(a: V3, b: V3) -> f32 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn normalize(a: V3) -> V3 {
+    let length = dot(a, a).sqrt().max(1e-6);
+    v3(a.x / length, a.y / length, a.z / length)
+}
+
+/// An orthographic camera, so every plane maps to the scene with an affine transform.
+#[derive(Clone, Copy)]
+struct Camera {
+    across: V3,
+    down: V3,
+    toward: V3,
+    origin: (f32, f32),
+}
+
+impl Camera {
+    fn new() -> Self {
+        let (sa, ca) = YAW.to_radians().sin_cos();
+        let (sb, cb) = PITCH.to_radians().sin_cos();
+        let mut camera = Self { across: v3(ca, 0.0, sa), down: v3(-sa * sb, -cb, ca * sb), toward: v3(-sa * cb, sb, ca * cb), origin: (0.0, 0.0) };
+        let corners: Vec<(f32, f32)> =
+            [0.0, W].iter().flat_map(|&x| [0.0, H].into_iter().flat_map(move |y| [0.0, D].into_iter().map(move |z| v3(x, y, z)))).map(|p| camera.project(p)).collect();
+        let (left, right) = corners.iter().fold((f32::MAX, f32::MIN), |(low, high), p| (low.min(p.0), high.max(p.0)));
+        let top = corners.iter().fold(f32::MAX, |low, p| low.min(p.1));
+        camera.origin = (WIDTH / 2.0 - (left + right) / 2.0, TOP + 6.0 - top);
+        camera
+    }
+
+    fn project(&self, p: V3) -> (f32, f32) {
+        (dot(self.across, p) + self.origin.0, dot(self.down, p) + self.origin.1)
+    }
+
+    /// A direction on screen, without the origin.
+    fn shift(&self, d: V3) -> (f32, f32) {
+        (dot(self.across, d), dot(self.down, d))
+    }
+
+    /// Maps plane coordinates (`s` along `along`, `t` along `step`) starting at `origin` into the scene.
+    fn plane(&self, origin: V3, along: V3, step: V3) -> Transform {
+        let (ox, oy) = self.project(origin);
+        Transform::from_row(dot(self.across, along), dot(self.down, along), dot(self.across, step), dot(self.down, step), ox, oy)
+    }
+
+    fn faces_us(&self, normal: V3) -> f32 {
+        dot(self.toward, normal)
+    }
+}
+
+/// The side profile as (z, y), going around from the back bottom: back, top, rounded top edge,
+/// front, the lower front curving back and the underside.
+fn profile() -> Vec<(f32, f32)> {
+    let mut points = vec![(0.0, 9.0), (0.0, H)];
+    let arc = |points: &mut Vec<(f32, f32)>, center: (f32, f32), radius: (f32, f32), from: f32, to: f32| {
+        for step in 0..=8 {
+            let angle = (from + (to - from) * step as f32 / 8.0).to_radians();
+            points.push((center.0 + radius.0 * angle.cos(), center.1 + radius.1 * angle.sin()));
+        }
+    };
+    arc(&mut points, (D - TOP_RADIUS, H - TOP_RADIUS), (TOP_RADIUS, TOP_RADIUS), 90.0, 0.0);
+    arc(&mut points, (D - CURVE_DEPTH, CURVE_Y), (CURVE_DEPTH, CURVE_Y - 1.0), 0.0, -90.0);
+    points.push((7.0, 3.0));
+    points
+}
+
+fn polygon(points: &[(f32, f32)]) -> Option<Path> {
+    let mut builder = PathBuilder::new();
+    builder.move_to(points[0].0, points[0].1);
+    for point in &points[1..] {
+        builder.line_to(point.0, point.1);
+    }
+    builder.close();
+    builder.finish()
+}
+
+fn line(from: (f32, f32), to: (f32, f32)) -> Option<Path> {
+    let mut builder = PathBuilder::new();
+    builder.move_to(from.0, from.1);
+    builder.line_to(to.0, to.1);
+    builder.finish()
+}
+
+/// The convex outline of a point set, for the silhouette under the faces.
+fn hull(mut points: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+    points.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    let mut lower: Vec<(f32, f32)> = Vec::new();
+    for &point in &points {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], point) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(point);
+    }
+    let mut upper: Vec<(f32, f32)> = Vec::new();
+    for &point in points.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], point) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// A plastic face: diffuse light from the upper left front and a soft highlight.
+fn lit(normal: V3, camera: &Camera) -> f32 {
+    let light = normalize(v3(-0.3, 0.5, 0.8));
+    let diffuse = dot(normal, light).max(0.0);
+    let half = normalize(v3(light.x + camera.toward.x, light.y + camera.toward.y, light.z + camera.toward.z));
+    let shine = dot(normal, half).max(0.0).powf(24.0);
+    (0.3 + 0.72 * diffuse + 0.25 * shine).min(1.0)
+}
+
+fn plastic(light: f32) -> Rgba {
+    Rgba::hex(0x98a2ad).mix(Rgba::hex(0xffffff), light)
+}
+
+struct Face {
+    path: Path,
+    light: f32,
+}
+
 struct Strand {
     path: Path,
     dash: f32,
@@ -52,19 +197,26 @@ struct Strand {
 }
 
 struct Mote {
-    x: f32,
-    y: f32,
+    start: (f32, f32),
+    travel: (f32, f32),
     radius: f32,
-    dx: f32,
-    dy: f32,
     seconds: f32,
     phase: f32,
 }
 
 pub struct Scene {
+    outline: Path,
+    faces: Vec<Face>,
+    front: Transform,
+    top: Transform,
+    holes: Path,
     strands: Vec<Strand>,
+    sheet: Path,
+    sway_origin: (f32, f32),
+    air_span: (f32, f32),
     motes: Vec<Mote>,
-    holes: Option<(String, Pixmap)>,
+    glow: (f32, f32),
+    mist: (f32, f32),
 }
 
 /// Small deterministic generator, so the air looks the same every time.
@@ -94,54 +246,126 @@ fn swing(seconds: f32, period: f32) -> f32 {
     smooth(if t > 1.0 { 2.0 - t } else { t })
 }
 
-fn line(from: (f32, f32), to: (f32, f32)) -> Option<Path> {
-    let mut builder = PathBuilder::new();
-    builder.move_to(from.0, from.1);
-    builder.line_to(to.0, to.1);
-    builder.finish()
-}
-
 impl Scene {
     pub fn new() -> Self {
+        let camera = Camera::new();
+        let profile = profile();
+
+        // Each profile segment, extruded along the width, is a strip of the body.
+        let center = profile.iter().fold((0.0, 0.0), |sum, p| (sum.0 + p.0, sum.1 + p.1));
+        let center = (center.0 / profile.len() as f32, center.1 / profile.len() as f32);
+        let mut faces = Vec::new();
+        for (index, &a) in profile.iter().enumerate() {
+            let b = profile[(index + 1) % profile.len()];
+            let mut normal = normalize(v3(0.0, b.0 - a.0, -(b.1 - a.1)));
+            let middle = ((a.0 + b.0) / 2.0 - center.0, (a.1 + b.1) / 2.0 - center.1);
+            if normal.z * middle.0 + normal.y * middle.1 < 0.0 {
+                normal = v3(0.0, -normal.y, -normal.z);
+            }
+            if camera.faces_us(normal) <= 0.01 {
+                continue;
+            }
+            let corners = [v3(0.0, a.1, a.0), v3(0.0, b.1, b.0), v3(W, b.1, b.0), v3(W, a.1, a.0)].map(|p| camera.project(p));
+            if let Some(path) = polygon(&corners) {
+                faces.push(Face { path, light: lit(normal, &camera) });
+            }
+        }
+        // The left end cap shows because the camera turns toward it.
+        let cap: Vec<(f32, f32)> = profile.iter().map(|&(z, y)| camera.project(v3(0.0, y, z))).collect();
+        if let Some(path) = polygon(&cap) {
+            faces.push(Face { path, light: lit(v3(-1.0, 0.0, 0.0), &camera) * 0.96 });
+        }
+        let silhouette: Vec<(f32, f32)> =
+            profile.iter().flat_map(|&(z, y)| [camera.project(v3(0.0, y, z)), camera.project(v3(W, y, z))]).collect();
+        let outline = polygon(&hull(silhouette)).expect("contorno do aparelho");
+
+        let front = camera.plane(v3(0.0, H, D), v3(1.0, 0.0, 0.0), v3(0.0, -1.0, 0.0));
+        let top = camera.plane(v3(0.0, H, 0.0), v3(1.0, 0.0, 0.0), v3(0.0, 0.0, 1.0));
+
+        // The perforations, as one path in front-plane units.
+        let mut holes = PathBuilder::new();
+        let (fx, fy, fw, fh) = FIELD;
+        let mut row = 0;
+        let mut t = fy + HOLE_PITCH / 2.0;
+        while t < fy + fh {
+            let mut s = fx + HOLE_PITCH / 2.0 + if row % 2 == 1 { HOLE_PITCH / 2.0 } else { 0.0 };
+            while s < fx + fw {
+                holes.push_circle(s, t, 0.42);
+                s += HOLE_PITCH;
+            }
+            t += HOLE_PITCH * 0.87;
+            row += 1;
+        }
+        let holes = holes.finish().expect("furos");
+
+        // Air leaves the outlet, falls and drifts toward the room, all projected like the unit.
         let mut random = Random(0x005e_eda1);
+        let (ox, ot, ow, oh) = OUTLET;
+        let outlet_y = H - (ot + oh);
+        let outlet_center = ox + ow / 2.0;
         let count = 18;
+        let mut air_span = (f32::MAX, f32::MIN);
         let strands = (0..count)
             .map(|index| {
                 let position = index as f32 / (count - 1) as f32;
                 let fade = 1.0 - (position - 0.5).abs() * 0.9;
-                let x = 64.0 + position * 156.0;
-                let spread = (x - 142.0) * 0.5;
-                let bend = random.range(-6.0, 6.0);
+                let x = ox + 6.0 + position * (ow - 12.0);
+                let spread = (x - outlet_center) * 0.45;
+                let bend = random.range(-5.0, 5.0);
+                let start = v3(x, outlet_y, D + 1.0);
+                let points = [
+                    start,
+                    v3(x + bend, outlet_y - 20.0, D + 10.0),
+                    v3(x + spread * 0.5 - bend, outlet_y - 42.0, D + 20.0),
+                    v3(x + spread, outlet_y - 64.0, D + 28.0),
+                ]
+                .map(|p| camera.project(p));
+                air_span = (air_span.0.min(points[0].1), air_span.1.max(points[3].1));
                 let mut builder = PathBuilder::new();
-                builder.move_to(x, AIR_TOP);
-                builder.cubic_to(x + bend, 124.0, x + spread * 0.5 - bend, 148.0, x + spread, AIR_BOTTOM - 4.0);
+                builder.move_to(points[0].0, points[0].1);
+                builder.cubic_to(points[1].0, points[1].1, points[2].0, points[2].1, points[3].0, points[3].1);
                 Strand {
                     path: builder.finish().expect("traço do ar"),
-                    dash: random.range(24.0, 50.0),
-                    gap: random.range(56.0, 110.0),
-                    pulse_width: random.range(1.6, 3.2),
+                    dash: random.range(22.0, 46.0),
+                    gap: random.range(54.0, 104.0),
+                    pulse_width: random.range(1.5, 3.0),
                     pulse_opacity: random.range(0.35, 0.7) * fade,
-                    line_width: random.range(1.0, 2.2),
+                    line_width: random.range(0.9, 2.0),
                     line_opacity: random.range(0.08, 0.18) * fade,
                     phase: random.next(),
                 }
             })
             .collect();
+        let sheet = polygon(&[
+            camera.project(v3(ox + 4.0, outlet_y, D + 1.0)),
+            camera.project(v3(ox + ow - 4.0, outlet_y, D + 1.0)),
+            camera.project(v3(ox + ow + 30.0, outlet_y - 64.0, D + 28.0)),
+            camera.project(v3(ox - 26.0, outlet_y - 64.0, D + 28.0)),
+        ])
+        .expect("lençol de ar");
         let motes = (0..48)
             .map(|_| {
-                let x = random.range(56.0, 264.0);
-                Mote {
-                    x,
-                    y: random.range(BODY.1 + BODY.3 + 1.0, BODY.1 + BODY.3 + 7.0),
-                    radius: random.range(0.8, 1.8),
-                    dx: (x - 160.0) * 0.12 + random.range(-5.0, 5.0),
-                    dy: random.range(20.0, 58.0),
-                    seconds: random.range(3.6, 7.2),
-                    phase: random.next(),
-                }
+                let x = random.range(10.0, W - 10.0);
+                let start = camera.project(v3(x, random.range(-2.0, 4.0), D - 6.0));
+                let travel = camera.shift(v3((x - W / 2.0) * 0.1 + random.range(-5.0, 5.0), -random.range(20.0, 52.0), random.range(10.0, 26.0)));
+                Mote { start, travel, radius: random.range(0.8, 1.7), seconds: random.range(3.6, 7.2), phase: random.next() }
             })
             .collect();
-        Self { strands, motes, holes: None }
+
+        Self {
+            outline,
+            faces,
+            front,
+            top,
+            holes,
+            strands,
+            sheet,
+            sway_origin: camera.project(v3(outlet_center, outlet_y, D + 1.0)),
+            air_span: (air_span.0 - 2.0, air_span.1),
+            motes,
+            glow: camera.project(v3(W * 0.5, -18.0, D + 20.0)),
+            mist: camera.project(v3(W * 0.5, -6.0, D + 6.0)),
+        }
     }
 
     /// Maps the scene into a box of the panel.
@@ -151,122 +375,105 @@ impl Scene {
         Transform::from_translate(left, y).pre_scale(k, k).pre_translate(0.0, -TOP)
     }
 
-    /// The still part: glow, body, perforated front, display and blade.
+    /// The still part: glow, shadow, body, grille, perforations, lip, blade and display.
     pub fn draw_unit(&mut self, canvas: &mut Canvas, look: &Look) {
         let on = look.power;
-        let (x, y, width, height) = BODY;
-        let bottom = y + height;
         let glow = look.tint.alpha(if look.light { 0.16 } else { 0.22 } * on);
-        canvas.fill(&ellipse(150.0, 142.0, 130.0, 34.0), &paint(radial(150.0, 142.0, 130.0, 34.0, &[(0.0, glow), (1.0, glow.alpha(0.0))])));
+        let (gx, gy) = self.glow;
+        canvas.fill(&ellipse(gx, gy, 132.0, 32.0), &paint(radial(gx, gy, 132.0, 32.0, &[(0.0, glow), (1.0, glow.alpha(0.0))])));
 
-        // The unit hangs on a wall: a soft shadow behind it and a contact shadow under it.
-        let wall = if look.light { 0.03 } else { 0.13 };
-        let spread: [(f32, f32); 3] = if look.light { [(5.0, 0.4), (2.5, 0.7), (1.0, 1.0)] } else { [(10.0, 0.45), (5.0, 0.75), (2.0, 1.0)] };
-        for (grow, alpha) in spread {
-            let shadow = Rgba(0, 0, 0, (255.0 * wall * alpha) as u8);
-            canvas.fill(&rounded(x - grow, y + 4.0 - grow * 0.4, width + grow * 2.0, height + grow * 1.6, 8.0 + grow), &solid(shadow));
+        // A soft shadow on the wall, down and to the right of the unit.
+        let wall = if look.light { 0.035 } else { 0.11 };
+        for (dx, dy, alpha) in [(9.0, 12.0, 0.4), (6.0, 8.0, 0.7), (3.0, 4.0, 1.0)] {
+            canvas.fill_at(&self.outline, &solid(Rgba(0, 0, 0, (255.0 * wall * alpha) as u8)), Transform::from_translate(dx, dy));
         }
-        let contact = Rgba(0, 0, 0, if look.light { 55 } else { 140 });
-        canvas.fill(&ellipse(160.0, bottom + 5.0, 122.0, 7.0), &paint(radial(160.0, bottom + 5.0, 122.0, 7.0, &[(0.0, contact), (1.0, contact.alpha(0.0))])));
 
         // Off dims the body a little, like a unit with the room lights low.
-        let shade = |color: u32| Rgba::hex(color).mix(Rgba(24, 26, 30, 255), 0.14 * (1.0 - on));
+        let dim = |color: Rgba| color.mix(Rgba(24, 26, 30, 255), 0.14 * (1.0 - on));
+        canvas.fill(&self.outline, &solid(dim(plastic(0.6))));
+        for face in &self.faces {
+            canvas.fill(&face.path, &solid(dim(plastic(face.light))));
+        }
         let thin = |width: f32| Stroke { width, line_cap: LineCap::Round, ..Stroke::default() };
 
-        // Top face with the intake grille, seen from slightly above.
-        let mut top = PathBuilder::new();
-        top.move_to(x + 7.0, y - 7.0);
-        top.line_to(x + width - 7.0, y - 7.0);
-        top.line_to(x + width - 1.0, y + 1.0);
-        top.line_to(x + 1.0, y + 1.0);
-        top.close();
-        if let Some(path) = top.finish() {
-            canvas.fill(&path, &paint(linear((0.0, y - 7.0), (0.0, y + 1.0), &[(0.0, shade(0xd3d9df)), (1.0, shade(0xeff2f5))])));
-        }
-        for row in [y - 4.6, y - 2.2] {
-            if let Some(path) = line((x + 8.0, row), (x + width - 8.0, row)) {
-                canvas.stroke_with(&path, &solid(shade(0xb9c1ca)), &thin(0.7), Transform::identity());
+        // The intake grille on the top face.
+        let grille = solid(dim(Rgba::hex(0xb4bcc6)));
+        for z in [9.0, 19.0, 29.0, 39.0] {
+            if let Some(path) = line((5.0, z), (W - 5.0, z)) {
+                canvas.stroke_with(&path, &grille, &thin(0.7), self.top);
             }
         }
         for divider in 1..5 {
-            let along = x + width * divider as f32 / 5.0;
-            if let Some(path) = line((along, y - 6.5), (along + (along - 160.0) * 0.02, y + 0.5)) {
-                canvas.stroke_with(&path, &solid(shade(0xc9d0d7)), &thin(1.1), Transform::identity());
+            let x = W * divider as f32 / 5.0;
+            if let Some(path) = line((x, 4.0), (x, D - TOP_RADIUS - 2.0)) {
+                canvas.stroke_with(&path, &solid(dim(Rgba::hex(0xc9d0d7))), &thin(1.3), self.top);
             }
         }
 
-        // The front: nearly flat, with small rounded corners.
-        let body = rounded(x, y, width, height, 7.0);
-        canvas.fill(&body, &paint(linear((0.0, y), (0.0, bottom), &[(0.0, shade(0xffffff)), (0.55, shade(0xf7f9fa)), (1.0, shade(0xeceff2))])));
-        let edge = Rgba(20, 26, 34, 0);
-        canvas.fill(&body, &paint(linear((x, 0.0), (x + width, 0.0), &[(0.0, edge.with_alpha(46)), (0.04, edge), (0.96, edge), (1.0, edge.with_alpha(50))])));
+        // The front plane: a sheen from the top, the band seam and the perforated field.
+        let front = self.front;
         let gloss = Rgba(255, 255, 255, 0);
-        canvas.fill(&body, &paint(linear((x, y), (x + width * 0.5, bottom), &[(0.0, gloss.with_alpha(120)), (0.5, gloss.with_alpha(30)), (0.65, gloss)])));
-        canvas.stroke(&rounded(x + 0.4, y + 0.4, width - 0.8, height - 0.8, 6.6), &solid(Rgba(0, 0, 0, 24)), 0.8);
-        if let Some(path) = line((x + 6.0, y + 1.2), (x + width - 6.0, y + 1.2)) {
-            canvas.stroke_with(&path, &solid(Rgba(255, 255, 255, 240)), &thin(1.2), Transform::identity());
+        canvas.fill_at(
+            &rounded(0.0, TOP_RADIUS, W, H - TOP_RADIUS - CURVE_Y, 1.0),
+            &paint(linear((0.0, TOP_RADIUS), (0.0, LIP_T), &[(0.0, gloss.with_alpha(90)), (1.0, gloss)])),
+            front,
+        );
+        if let Some(path) = line((3.0, BAND_T), (W - 3.0, BAND_T)) {
+            canvas.stroke_with(&path, &solid(dim(Rgba::hex(0xdde2e7))), &thin(0.6), front);
         }
-
-        // The perforated field, which takes the mode color while WindFree runs.
         let tint_holes = look.tint.mix(Rgba::hex(0x1d4f7a), 0.4);
-        let hole_color = Rgba::hex(0xa3acb6).mix(tint_holes, 0.85 * look.windfree * on);
-        self.draw_holes(canvas, hole_color);
-        if let Some(path) = line((x + 5.0, BAND_Y), (x + width - 5.0, BAND_Y)) {
-            canvas.stroke_with(&path, &solid(shade(0xe3e7eb)), &thin(0.6), Transform::identity());
-        }
+        let hole = Rgba::hex(0x9aa4ae).mix(tint_holes, 0.85 * look.windfree * on);
+        let (fx, _, fw, _) = FIELD;
+        canvas.fill_at(
+            &self.holes,
+            &paint(linear((fx, 0.0), (fx + fw, 0.0), &[(0.0, hole.alpha(0.15)), (0.04, hole), (0.96, hole), (1.0, hole.alpha(0.15))])),
+            front,
+        );
 
-        // The lower lip curves back toward the wall.
-        let lip = rounded(x + 2.0, LIP_Y, width - 4.0, bottom - LIP_Y - 1.0, 6.0);
-        canvas.fill(&lip, &paint(linear((0.0, LIP_Y), (0.0, bottom), &[(0.0, shade(0xf4f6f8)), (0.5, shade(0xeaedf0)), (1.0, shade(0xd8dde2))])));
-        canvas.stroke(&rounded(x + 2.5, LIP_Y + 0.5, width - 5.0, bottom - LIP_Y - 2.0, 5.5), &solid(shade(0xd0d6dc)), 0.7);
-        canvas.fill(&lip, &paint(linear((x, 0.0), (x + width, 0.0), &[(0.0, edge.with_alpha(40)), (0.05, edge), (0.95, edge), (1.0, edge.with_alpha(44))])));
-
-        // Behind the blade: the dark outlet with the side-to-side vanes.
-        let (bx, by, bw, bh) = BLADE;
-        canvas.fill(&rounded(bx, by, bw, bh, bh / 2.0), &paint(linear((0.0, by), (0.0, by + bh), &[(0.0, Rgba::hex(0x0a0c0f)), (1.0, Rgba::hex(0x2c323a))])));
-        for vane in 1..16 {
-            let along = bx + bw * vane as f32 / 16.0;
-            if let Some(path) = line((along, by + 2.0), (along, by + bh - 2.0)) {
-                canvas.stroke_with(&path, &solid(Rgba::hex(0x3b424b)), &thin(0.9), Transform::identity());
+        // The lower lip with the outlet, its vanes and the blade, and the display window.
+        let lip_height = H - CURVE_Y - LIP_T + 3.0;
+        canvas.fill_at(
+            &rounded(2.0, LIP_T, W - 4.0, lip_height, 4.0),
+            &paint(linear((0.0, LIP_T), (0.0, LIP_T + lip_height), &[(0.0, dim(Rgba::hex(0xf3f5f7))), (1.0, dim(Rgba::hex(0xe1e5e9)))])),
+            front,
+        );
+        canvas.stroke_with(&rounded(2.3, LIP_T + 0.3, W - 4.6, lip_height - 0.6, 3.7), &solid(dim(Rgba::hex(0xd1d7dd))), &thin(0.6), front);
+        let (ox, ot, ow, oh) = OUTLET;
+        canvas.fill_at(&rounded(ox, ot, ow, oh, oh / 2.0), &paint(linear((0.0, ot), (0.0, ot + oh), &[(0.0, Rgba::hex(0x090b0e)), (1.0, Rgba::hex(0x2b3139))])), front);
+        for vane in 1..18 {
+            let x = ox + ow * vane as f32 / 18.0;
+            if let Some(path) = line((x, ot + 1.5), (x, ot + oh - 1.5)) {
+                canvas.stroke_with(&path, &solid(Rgba::hex(0x3d444d)), &thin(0.8), front);
             }
         }
-
         // The blade tilts down from the bottom of the outlet for normal airflow and stays shut in WindFree.
         let open = on * (1.0 - look.windfree);
-        let hinge = by + bh;
-        let blade = Transform::from_translate(0.0, hinge).pre_concat(Transform::from_row(1.0, 0.0, 0.0, 1.0 - 0.45 * open, 0.0, 0.0)).pre_translate(0.0, -hinge).pre_concat(Transform::from_translate(0.0, (bh + 1.0) * open));
-        canvas.fill_at(&rounded(bx, by, bw, bh, bh / 2.0), &paint(linear((0.0, by), (0.0, by + bh), &[(0.0, shade(0xffffff)), (1.0, shade(0xe6eaee))])), blade);
-        canvas.stroke_with(&rounded(bx + 0.4, by + 0.4, bw - 0.8, bh - 0.8, bh / 2.0 - 0.4), &solid(shade(0xccd3da)), &thin(0.6), blade);
+        let hinge = ot + oh;
+        let blade = front.pre_translate(0.0, hinge).pre_scale(1.0, 1.0 - 0.5 * open).pre_translate(0.0, -hinge + (oh + 1.0) * open);
+        canvas.fill_at(&rounded(ox, ot, ow, oh, oh / 2.0), &paint(linear((0.0, ot), (0.0, ot + oh), &[(0.0, dim(Rgba::hex(0xffffff))), (1.0, dim(Rgba::hex(0xe4e8ec)))])), blade);
+        canvas.stroke_with(&rounded(ox + 0.3, ot + 0.3, ow - 0.6, oh - 0.6, oh / 2.0 - 0.3), &solid(dim(Rgba::hex(0xcbd2d9))), &thin(0.5), blade);
 
-        // The display window on the right of the lip; the digits light up when the display is on.
         let (dx, dy, dw, dh) = DISPLAY;
-        canvas.fill(&rounded(dx, dy, dw, dh, 3.0), &paint(linear((0.0, dy), (0.0, dy + dh), &[(0.0, shade(0xe4e8ec)), (1.0, shade(0xf0f2f5))])));
-        canvas.stroke(&rounded(dx + 0.3, dy + 0.3, dw - 0.6, dh - 0.6, 2.7), &solid(shade(0xcfd5db)), 0.6);
+        canvas.fill_at(&rounded(dx, dy, dw, dh, 2.5), &paint(linear((0.0, dy), (0.0, dy + dh), &[(0.0, dim(Rgba::hex(0xe2e6ea))), (1.0, dim(Rgba::hex(0xeef1f4)))])), front);
+        canvas.stroke_with(&rounded(dx + 0.3, dy + 0.3, dw - 0.6, dh - 0.6, 2.2), &solid(dim(Rgba::hex(0xccd2d8))), &thin(0.5), front);
         if let Some(text) = &look.display {
-            let glow = Rgba::hex(0xeaf6ff).mix(look.tint, 0.6).alpha(on);
-            canvas.fill(&ellipse(dx + dw / 2.0, dy + dh / 2.0, dw * 0.7, dh), &paint(radial(dx + dw / 2.0, dy + dh / 2.0, dw * 0.7, dh, &[(0.0, glow.alpha(0.28)), (1.0, glow.alpha(0.0))])));
-            canvas.text(&format!("{text}°"), Style::Semibold, 8.5, dx + dw - 4.0, dy + dh - 3.0, glow.mix(Rgba::hex(0x2a5d8a), 0.25), Align::Right);
+            let digits = Rgba::hex(0xeaf6ff).mix(look.tint, 0.6).alpha(on);
+            let (cx, cy) = map(front, dx + dw / 2.0, dy + dh / 2.0);
+            canvas.fill(&ellipse(cx, cy, dw * 0.7, dh), &paint(radial(cx, cy, dw * 0.7, dh, &[(0.0, digits.alpha(0.3)), (1.0, digits.alpha(0.0))])));
+            let (tx, ty) = map(front, dx + dw - 3.0, dy + dh - 2.2);
+            canvas.text(&format!("{text}°"), Style::Semibold, 7.5, tx, ty, digits.mix(Rgba::hex(0x2a5d8a), 0.25), Align::Right);
             // The WindFree mark beside the digits while it runs.
-            let mark = glow.alpha(look.windfree);
-            for (index, length) in [4.0, 3.0, 4.0].into_iter().enumerate() {
-                let row = dy + 3.6 + index as f32 * 2.3;
-                if let Some(path) = line((dx + 3.5, row), (dx + 3.5 + length, row)) {
-                    canvas.stroke_with(&path, &solid(mark), &thin(0.8), Transform::identity());
+            let mark = digits.alpha(look.windfree);
+            for (index, length) in [3.5, 2.5, 3.5].into_iter().enumerate() {
+                let row = dy + 2.8 + index as f32 * 2.0;
+                if let Some(path) = line((dx + 3.0, row), (dx + 3.0 + length, row)) {
+                    canvas.stroke_with(&path, &solid(mark), &thin(0.7), front);
                 }
             }
         }
-    }
 
-    fn draw_holes(&mut self, canvas: &mut Canvas, color: Rgba) {
-        let scale = canvas.scale();
-        let key = format!("{scale:.3}|{color:?}");
-        if self.holes.as_ref().is_none_or(|(cached, _)| *cached != key) {
-            self.holes = render_holes(scale, color).map(|pixmap| (key, pixmap));
-        }
-        let Some((_, holes)) = &self.holes else { return };
-        let t = canvas.transform;
-        let origin = (t.sx * FIELD.0 + t.kx * FIELD.1 + t.tx, t.ky * FIELD.0 + t.sy * FIELD.1 + t.ty);
-        canvas.pixmap.draw_pixmap(origin.0.floor() as i32, origin.1.floor() as i32, holes.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        // A hairline around the unit keeps it crisp on both themes.
+        canvas.stroke(&self.outline, &solid(Rgba(0, 0, 0, if look.light { 30 } else { 50 })), 0.7);
     }
 
     /// The moving air, drawn on top of the still frame every tick.
@@ -282,26 +489,17 @@ impl Scene {
     }
 
     fn draw_blade_air(&self, canvas: &mut Canvas, look: &Look, seconds: f32, strength: f32) {
-        let (ox, oy) = SWAY_ORIGIN;
+        let (ox, oy) = self.sway_origin;
         let vertical = if look.sway_vertical { 0.72 + 0.32 * swing(seconds, 4.6) } else { 1.0 };
         let skew = if look.sway_horizontal { (-13.0 + 26.0 * swing(seconds, 6.2)).to_radians().tan() } else { 0.0 };
         let sway = Transform::from_translate(ox, oy).pre_concat(Transform::from_row(1.0, 0.0, skew, vertical, 0.0, 0.0)).pre_translate(-ox, -oy);
         // Air fades out as it falls away from the unit.
+        let (top, bottom) = self.air_span;
         let fall = |opacity: f32| {
             let color = look.tint.alpha(opacity * strength);
-            paint(linear((0.0, AIR_TOP - 2.0), (0.0, AIR_BOTTOM), &[(0.0, color), (0.5, color.alpha(0.6)), (1.0, color.alpha(0.0))]))
+            paint(linear((0.0, top), (0.0, bottom), &[(0.0, color), (0.5, color.alpha(0.6)), (1.0, color.alpha(0.0))]))
         };
-
-        let mut sheet = PathBuilder::new();
-        sheet.move_to(62.0, AIR_TOP - 1.0);
-        sheet.line_to(222.0, AIR_TOP - 1.0);
-        sheet.line_to(262.0, AIR_BOTTOM);
-        sheet.line_to(22.0, AIR_BOTTOM);
-        sheet.close();
-        if let Some(sheet) = sheet.finish() {
-            canvas.fill_at(&sheet, &fall(0.12), sway);
-        }
-
+        canvas.fill_at(&self.sheet, &fall(0.12), sway);
         for strand in &self.strands {
             let base = Stroke { width: strand.line_width, line_cap: LineCap::Round, ..Stroke::default() };
             canvas.stroke_with(&strand.path, &fall(strand.line_opacity), &base, sway);
@@ -316,15 +514,16 @@ impl Scene {
         }
     }
 
-    /// WindFree: the blade stays shut and the air seeps out of the front as a slow mist.
+    /// WindFree: the blade stays shut and the air seeps out as a slow mist.
     fn draw_seep(&self, canvas: &mut Canvas, look: &Look, seconds: f32, strength: f32) {
         let mist = look.tint.alpha(0.15 * strength);
-        canvas.fill(&ellipse(160.0, 112.0, 112.0, 16.0), &paint(radial(160.0, 112.0, 112.0, 16.0, &[(0.0, mist), (1.0, mist.alpha(0.0))])));
+        let (mx, my) = self.mist;
+        canvas.fill(&ellipse(mx, my + 10.0, 112.0, 16.0), &paint(radial(mx, my + 10.0, 112.0, 16.0, &[(0.0, mist), (1.0, mist.alpha(0.0))])));
         for mote in &self.motes {
             let t = (seconds / mote.seconds + mote.phase).fract();
             let travel = smooth(t);
             let opacity = if t < 0.3 { t / 0.3 } else { 1.0 - (t - 0.3) / 0.7 } * 0.85 * strength;
-            let (x, y) = (mote.x + mote.dx * travel, mote.y + mote.dy * travel);
+            let (x, y) = (mote.start.0 + mote.travel.0 * travel, mote.start.1 + mote.travel.1 * travel);
             let radius = mote.radius * 1.8;
             let color = look.tint.alpha(opacity);
             canvas.fill(&ellipse(x, y, radius, radius), &paint(radial(x, y, radius, radius, &[(0.0, color), (0.5, color.alpha(0.6)), (1.0, color.alpha(0.0))])));
@@ -332,24 +531,32 @@ impl Scene {
     }
 }
 
-/// The perforation grid: fine, even dots across the front, rendered once per scale and color.
-fn render_holes(scale: f32, color: Rgba) -> Option<Pixmap> {
-    let (_, _, width, height) = FIELD;
-    let mut pixmap = Pixmap::new((width * scale).ceil() as u32 + 1, (height * scale).ceil() as u32 + 1)?;
-    let mut canvas = Canvas { pixmap: &mut pixmap, transform: Transform::from_scale(scale, scale) };
-    let mut y = HOLE_PITCH / 2.0;
-    let mut row = 0;
-    while y < height {
-        // Every other row is offset by half a pitch, like a punched sheet.
-        let mut x = HOLE_PITCH / 2.0 + if row % 2 == 1 { HOLE_PITCH / 2.0 } else { 0.0 };
-        while x < width {
-            let side = (x / width).min(1.0 - x / width);
-            let fade = (side / 0.03).min(1.0) * (0.55 + 0.45 * (y / (height * 0.25)).min(1.0));
-            canvas.fill(&ellipse(x, y, 0.48, 0.48), &solid(color.alpha(fade)));
-            x += HOLE_PITCH;
+fn map(transform: Transform, x: f32, y: f32) -> (f32, f32) {
+    (transform.sx * x + transform.kx * y + transform.tx, transform.ky * x + transform.sy * y + transform.ty)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_unit_fits_the_scene() {
+        let camera = Camera::new();
+        for &(z, y) in &profile() {
+            for x in [0.0, W] {
+                let (sx, sy) = camera.project(v3(x, y, z));
+                assert!((0.0..=WIDTH).contains(&sx), "x {sx}");
+                assert!((TOP..=TOP + HEIGHT).contains(&sy), "y {sy}");
+            }
         }
-        y += HOLE_PITCH * 0.87;
-        row += 1;
     }
-    Some(pixmap)
+
+    #[test]
+    fn front_top_and_left_end_face_the_camera() {
+        let camera = Camera::new();
+        assert!(camera.faces_us(v3(0.0, 0.0, 1.0)) > 0.0);
+        assert!(camera.faces_us(v3(0.0, 1.0, 0.0)) > 0.0);
+        assert!(camera.faces_us(v3(-1.0, 0.0, 0.0)) > 0.0);
+        assert!(camera.faces_us(v3(1.0, 0.0, 0.0)) < 0.0);
+    }
 }

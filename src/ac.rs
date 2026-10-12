@@ -184,6 +184,8 @@ fn read_device(main: &Value) -> Device {
         ("filtroUso", number(&attribute("custom.dustFilter", "dustFilterUsage"))),
         ("filtroStatus", attribute("custom.dustFilter", "dustFilterStatus")),
         ("potencia", number(&report["power"])),
+        // The unit reports power every few minutes; this is when the last report ended.
+        ("potenciaFim", report["end"].clone()),
         ("energia", energy.unwrap_or(Value::Null)),
         ("ambiente", number(&attribute("temperatureMeasurement", "temperature"))),
         ("umidade", number(&attribute("relativeHumidityMeasurement", "humidity"))),
@@ -317,7 +319,7 @@ impl DemoUnit {
             "filtroAlerta": 500, "filtroUso": 37, "filtroStatus": "normal", "potencia": 640, "energia": 812.4,
             "ambiente": 27, "umidade": 58,
             "modos": ["cool", "dry", "wind", "auto", "heat"], "ventos": ["auto", "low", "medium", "high", "turbo"],
-            "oscilacoes": ["fixed", "vertical", "horizontal", "all"], "extras": ["off", "windFree", "windFreeSleep", "sleep"],
+            "oscilacoes": ["fixed", "vertical", "horizontal", "all"], "extras": ["off", "windFree", "windFreeSleep", "sleep", "speed"],
         });
         let Value::Object(device) = device else { unreachable!() };
         Self { device }
