@@ -50,7 +50,7 @@ pub struct Look {
     /// 0 blade airflow, 1 WindFree.
     pub windfree: f32,
     pub display: Option<String>,
-    /// Fan strength, 0.5 for low up to 1 for turbo.
+    /// Fan strength, 0.5 for dry and low up to 1 for the turbo fan and 1.15 for the turbo mode.
     pub flow_strength: f32,
     /// Cycles of air travel so far, which keeps the motion smooth when the fan speed changes.
     pub flow_phase: f32,
@@ -227,6 +227,8 @@ struct Face {
 /// One strand of air: where it leaves the outlet and how it differs from its neighbors.
 struct Strand {
     along: f32,
+    /// The order in which strands join as the fan gets stronger, spread across the outlet.
+    rank: f32,
     spread: f32,
     tilt: f32,
     reach: f32,
@@ -341,7 +343,10 @@ impl Scene {
         let holes = holes.finish().expect("furos");
 
         let mut random = Random(0x005e_eda1);
-        let count = 22;
+        let count = 30;
+        // Bit-reversed order: the first strands to show are already spread across the outlet.
+        let mut order: Vec<usize> = (0..count).collect();
+        order.sort_by_key(|&index| (index as u32).reverse_bits());
         let strands = (0..count)
             .map(|index| {
                 let along = index as f32 / (count - 1) as f32;
@@ -349,6 +354,7 @@ impl Scene {
                 let fade = 1.0 - side * 0.45;
                 Strand {
                     along,
+                    rank: order.iter().position(|&other| other == index).unwrap_or(index) as f32,
                     // The strands fan out, and the middle ones reach furthest.
                     spread: (along - 0.5) * 46.0 + random.range(-3.0, 3.0),
                     tilt: random.range(-5.0, 5.0),
@@ -358,9 +364,9 @@ impl Scene {
                     dash: random.range(20.0, 42.0),
                     gap: random.range(50.0, 96.0),
                     pulse_width: random.range(1.5, 3.0),
-                    pulse_opacity: random.range(0.4, 0.75) * fade,
+                    pulse_opacity: random.range(0.45, 0.8) * fade,
                     line_width: random.range(0.9, 2.0),
-                    line_opacity: random.range(0.08, 0.18) * fade,
+                    line_opacity: random.range(0.13, 0.26) * fade,
                     phase: random.next(),
                 }
             })
@@ -497,7 +503,7 @@ impl Scene {
 
     /// The moving air, drawn on top of the still frame every tick.
     pub fn draw_air(&self, canvas: &mut Canvas, look: &Look, seconds: f32) {
-        let blade = look.power * (1.0 - look.windfree) * look.flow_strength;
+        let blade = look.power * (1.0 - look.windfree);
         if blade > 0.01 {
             self.draw_blade_air(canvas, look, blade);
         }
@@ -509,11 +515,21 @@ impl Scene {
 
     /// Air leaves the outlet in the blade and vane direction, sinks as it cools the room and
     /// ripples on its way, each strand fading out before its tip.
-    fn draw_blade_air(&self, canvas: &mut Canvas, look: &Look, strength: f32) {
+    fn draw_blade_air(&self, canvas: &mut Canvas, look: &Look, presence: f32) {
         let (ox, ot, ow, oh) = OUTLET;
         let outlet_y = H - (ot + oh);
-        let length = 44.0 + 30.0 * look.flow_strength;
+        // A stronger fan sends more, longer, brighter and thicker air, reaching down toward the setpoint.
+        let force = look.flow_strength;
+        let length = 54.0 + 50.0 * force;
+        let shown = 10.0 + 20.0 * ((force - 0.5) / 0.65).clamp(0.0, 1.0);
+        let brightness = 0.55 + 0.5 * force;
+        let thickness = 0.8 + 0.35 * force;
         for strand in &self.strands {
+            // Strands join and leave one at a time as the strength eases, never all at once.
+            let visible = (shown - strand.rank).clamp(0.0, 1.0);
+            if visible <= 0.0 {
+                continue;
+            }
             let yaw = (look.air_yaw + strand.spread).to_radians();
             let pitch = (look.air_pitch + strand.tilt).to_radians();
             let direction = v3(pitch.cos() * yaw.sin(), -pitch.sin(), pitch.cos() * yaw.cos());
@@ -534,18 +550,19 @@ impl Scene {
                 .collect();
             let Some(path) = through(&points) else { continue };
             let (from, to) = (points[0], points[points.len() - 1]);
+            // Air eases out of the outlet, then thins away before its tip.
             let fall = |opacity: f32| {
-                let color = look.tint.alpha(opacity * strength);
-                paint(linear(from, to, &[(0.0, color), (0.4, color.alpha(0.8)), (0.75, color.alpha(0.3)), (1.0, color.alpha(0.0))]))
+                let color = look.tint.alpha(opacity * presence * visible * brightness);
+                paint(linear(from, to, &[(0.0, color.alpha(0.3)), (0.07, color), (0.6, color.alpha(0.85)), (0.88, color.alpha(0.3)), (1.0, color.alpha(0.0))]))
             };
-            let base = Stroke { width: strand.line_width, line_cap: LineCap::Round, ..Stroke::default() };
+            let base = Stroke { width: strand.line_width * thickness, line_cap: LineCap::Round, ..Stroke::default() };
             canvas.stroke_with(&path, &fall(strand.line_opacity), &base, Transform::identity());
             let cycle = strand.dash + strand.gap;
             let progress = (look.flow_phase + strand.phase).fract();
             let dash = StrokeDash::new(vec![strand.dash, strand.gap], -cycle * progress);
             // A wide faint pass under the bright one stands in for a glow.
             for (widen, opacity) in [(3.0, 0.2), (1.0, 1.0)] {
-                let pulse = Stroke { width: strand.pulse_width * widen, line_cap: LineCap::Round, dash: dash.clone(), ..Stroke::default() };
+                let pulse = Stroke { width: strand.pulse_width * thickness * widen, line_cap: LineCap::Round, dash: dash.clone(), ..Stroke::default() };
                 canvas.stroke_with(&path, &fall(strand.pulse_opacity * opacity), &pulse, Transform::identity());
             }
         }

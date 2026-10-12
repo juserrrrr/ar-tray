@@ -48,7 +48,7 @@ target\release\ar-tray.exe --demo
 
 ## Usar o painel
 
-- **Temperatura**: botões − e +, o controle deslizante, a roda do mouse sobre o painel ou as setas do teclado.
+- **Temperatura**: botões − e +, o controle deslizante ou as setas do teclado.
 - **Modo**: um toque na fileira de modos. Aparecem só os modos que o aparelho aceita.
 - **Vento e Direção**: abrem uma lista com as opções do aparelho.
 - **WindFree, Sono e Turbo**: ligam e desligam direto. O Turbo é o resfriamento rápido da Samsung: roda por um tempo e volta sozinho para o ajuste anterior, sem mudar temperatura nem vento. Enquanto ele roda, o aparelho trava a temperatura e o vento, e o painel deixa esses controles apagados. Os três ficam apagados nos aparelhos que não têm.

@@ -29,7 +29,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SW_HIDE, SWP_FRAMECHANGED,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, TranslateMessage, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CONTEXTMENU, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCACTIVATE, WM_NCCALCSIZE,
     WM_NCHITTEST, WM_NULL, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPED,
     WS_POPUP, WS_THICKFRAME,
 };
@@ -535,11 +535,6 @@ impl App {
                 unsafe { ReleaseCapture() };
                 let (x, y) = self.pointer(lparam);
                 let actions = self.ui.pointer_up(x, y);
-                self.run(actions);
-                Outcome::Result(0)
-            }
-            WM_MOUSEWHEEL => {
-                let actions = self.ui.wheel(signed_high(wparam as isize));
                 self.run(actions);
                 Outcome::Result(0)
             }

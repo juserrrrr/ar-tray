@@ -405,7 +405,6 @@ pub struct Panel {
     menu: Option<Menu>,
     settings: bool,
     drag: Option<i64>,
-    wheel: i32,
     power: Ease,
     // The air direction, strength and pace glide to new settings instead of jumping.
     air_pitch: Ease,
@@ -434,7 +433,6 @@ impl Panel {
             menu: None,
             settings: false,
             drag: None,
-            wheel: 0,
             power: Ease { value: 0.0, target: 0.0 },
             air_pitch: Ease { value: scene::PITCH_REST, target: scene::PITCH_REST },
             air_yaw: Ease { value: 0.0, target: 0.0 },
@@ -857,20 +855,6 @@ impl Panel {
         vec![action]
     }
 
-    /// One notch of the wheel moves the setpoint one degree.
-    pub fn wheel(&mut self, delta: i32) -> Vec<Action> {
-        if self.screen() != Screen::Main || self.menu.is_some() || self.device().is_none() {
-            return Vec::new();
-        }
-        self.wheel += delta;
-        let notches = self.wheel / 120;
-        if notches == 0 {
-            return Vec::new();
-        }
-        self.wheel -= notches * 120;
-        self.nudge(notches as i64)
-    }
-
     pub fn escape(&mut self) -> Vec<Action> {
         self.dirty = true;
         if self.menu.take().is_some() {
@@ -915,12 +899,15 @@ impl Panel {
             scene::PITCH_REST
         };
         let yaw = if matches!(swing, "horizontal" | "all") { scene::YAW_SWING * (2.0 * scene::swing(seconds, 6.2) - 1.0) } else { 0.0 };
-        let (pace, strength) = flow_for(self.field("vento").as_str().unwrap_or("auto"), self.mode());
+        // The turbo mode pushes harder than any fan speed.
+        let (pace, strength) = if self.turbo() { (0.95, 1.15) } else { flow_for(self.field("vento").as_str().unwrap_or("auto"), self.mode()) };
         self.air_pitch.follow(pitch, elapsed, 0.6);
         self.air_yaw.follow(yaw, elapsed, 0.6);
         self.strength.follow(strength, elapsed, 0.5);
         self.flow_seconds.follow(pace, elapsed, 0.5);
-        self.flow_phase = (self.flow_phase + elapsed / self.flow_seconds.value).fract();
+        // Wraps where both the pulses (whole cycles) and the ripple (0.6 per cycle) come back to the start,
+        // so the air never jumps.
+        self.flow_phase = (self.flow_phase + elapsed / self.flow_seconds.value) % 5.0;
     }
 
     fn look(&self) -> scene::Look {
@@ -1487,7 +1474,6 @@ mod tests {
         assert_eq!(click(&mut panel, x, y), [Action::Set("extra", json!("windFreeSleep"))]);
         let (x, y) = center(panel.mode_rect(4, 5));
         assert_eq!(click(&mut panel, x, y), [Action::Set("modo", json!("heat"))]);
-        assert_eq!(panel.wheel(-120), [Action::Set("temp", json!(22))]);
     }
 
     #[test]
@@ -1540,7 +1526,7 @@ mod tests {
         assert_eq!(click(&mut panel, x, y), [Action::Set("extra", json!("off"))]);
         // The unit holds the setpoint and the fan while turbo runs.
         assert!(click(&mut panel, TEMP_UP.0, TEMP_UP.1).is_empty());
-        assert!(panel.wheel(120).is_empty());
+        assert!(panel.nudge(1).is_empty());
         let (x, y) = center(tile_rect(0));
         assert!(click(&mut panel, x, y).is_empty());
     }
