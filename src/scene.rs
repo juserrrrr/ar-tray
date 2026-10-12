@@ -40,7 +40,7 @@ pub const PITCH_UP: f32 = 25.0;
 pub const PITCH_DOWN: f32 = 72.0;
 pub const PITCH_REST: f32 = 52.0;
 /// How far the vanes turn the air to each side.
-pub const YAW_SWING: f32 = 28.0;
+pub const YAW_SWING: f32 = 40.0;
 
 /// What the scene shows; the panel eases every number, so changes glide instead of jumping.
 pub struct Look {
@@ -356,7 +356,7 @@ impl Scene {
                     along,
                     rank: order.iter().position(|&other| other == index).unwrap_or(index) as f32,
                     // The strands fan out, and the middle ones reach furthest.
-                    spread: (along - 0.5) * 46.0 + random.range(-3.0, 3.0),
+                    spread: (along - 0.5) * 80.0 + random.range(-3.0, 3.0),
                     tilt: random.range(-5.0, 5.0),
                     reach: (1.0 - 0.3 * side * side) * random.range(0.88, 1.06),
                     wave: random.range(1.2, 3.0),
