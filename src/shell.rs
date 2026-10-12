@@ -29,7 +29,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SW_HIDE, SWP_FRAMECHANGED,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, TranslateMessage, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CONTEXTMENU, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCACTIVATE, WM_NCCALCSIZE,
+    WM_CHAR, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCACTIVATE, WM_NCCALCSIZE,
     WM_NCHITTEST, WM_NULL, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPED,
     WS_POPUP, WS_THICKFRAME,
 };
@@ -400,6 +400,13 @@ impl App {
                 Action::Hide => self.hide(),
                 Action::Autostart(enabled) => settings::set_autostart(&self.settings_file, enabled, self.demo),
                 Action::Tariff(price) => settings::set_tariff(&self.settings_file, price),
+                Action::MonthUsed(kwh) => {
+                    let device = &self.view["device"];
+                    if let (Some(id), Some(total)) = (device["id"].as_str(), device["energia"].as_f64()) {
+                        settings::set_month_used(&self.settings_file, id, total, kwh, platform::today());
+                    }
+                    self.update_energy();
+                }
                 Action::Login => self.bridge.login(),
                 Action::ReopenLogin => self.bridge.reopen_login(),
                 Action::CancelLogin => self.bridge.cancel_login(),
@@ -550,6 +557,12 @@ impl App {
                 unsafe { ReleaseCapture() };
                 let (x, y) = self.pointer(lparam);
                 let actions = self.ui.pointer_up(x, y);
+                self.run(actions);
+                Outcome::Result(0)
+            }
+            // Typed characters only matter while a number is being edited.
+            WM_CHAR => {
+                let actions = char::from_u32(wparam as u32).map(|typed| self.ui.type_char(typed)).unwrap_or_default();
                 self.run(actions);
                 Outcome::Result(0)
             }

@@ -71,6 +71,18 @@ pub fn track_month(file: &Path, device: &str, total_kwh: f64, today: (u16, u16, 
     MonthUse { kwh: (total_kwh - record["inicioKwh"].as_f64().unwrap_or(total_kwh)).max(0.0), since: record["desde"].as_str().unwrap_or("").to_owned() }
 }
 
+/// Sets this month from the kWh the SmartThings app shows, so counting goes on from the right start.
+pub fn set_month_used(file: &Path, device: &str, total_kwh: f64, used_kwh: f64, today: (u16, u16, u16)) -> MonthUse {
+    let (year, month, _) = today;
+    let mut settings = read(file);
+    let start = (total_kwh - used_kwh.max(0.0)).max(0.0);
+    settings["energia"] = json!({ "mes": format!("{year:04}-{month:02}"), "aparelho": device, "inicioKwh": start, "desde": format!("01/{month:02}") });
+    if let Err(error) = fs::write(file, settings.to_string()) {
+        eprintln!("não deu para salvar o consumo do mês: {error}");
+    }
+    MonthUse { kwh: total_kwh - start, since: format!("01/{month:02}") }
+}
+
 fn shown(value: &Value) -> String {
     match value {
         Value::Null => "-".into(),
@@ -112,6 +124,11 @@ mod tests {
         assert_eq!((next_month.kwh, next_month.since.as_str()), (0.0, "01/11"));
         let other_unit = track_month(&file, "b", 50.0, (2026, 11, 2));
         assert_eq!(other_unit.kwh, 0.0);
+        // Set from the SmartThings app, then counting goes on from there.
+        let set = set_month_used(&file, "b", 50.0, 12.0, (2026, 11, 2));
+        assert_eq!((set.kwh, set.since.as_str()), (12.0, "01/11"));
+        let after = track_month(&file, "b", 53.0, (2026, 11, 3));
+        assert_eq!((after.kwh, after.since.as_str()), (15.0, "01/11"));
         assert_eq!(tariff(&file), DEFAULT_TARIFF);
         set_tariff(&file, 1.234);
         assert_eq!(tariff(&file), 1.23);

@@ -7,7 +7,7 @@ import path from 'node:path';
 const NAMES = [
   'air-vent', 'arrow-left-right', 'calendar', 'check', 'chevron-left', 'chevron-right', 'chevron-up', 'cloud-off', 'clock',
   'droplet', 'droplets', 'external-link', 'fan', 'feather', 'flame', 'loader-circle', 'lock', 'log-in', 'log-out',
-  'minus', 'monitor', 'moon', 'move', 'move-horizontal', 'move-vertical', 'plus', 'power', 'receipt', 'refresh-cw', 'rocket', 'search',
+  'minus', 'monitor', 'moon', 'move', 'move-horizontal', 'move-vertical', 'pencil', 'plus', 'power', 'receipt', 'refresh-cw', 'rocket', 'search',
   'shield-check', 'signal', 'signal-high', 'signal-low', 'signal-medium', 'sliders-horizontal', 'snowflake',
   'sparkles', 'sun', 'thermometer', 'triangle-alert', 'volume-2', 'wind', 'x', 'zap',
 ];

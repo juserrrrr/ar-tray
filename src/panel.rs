@@ -105,6 +105,8 @@ const SECONDARY_LEFT: (f32, f32, f32, f32) = (14.0, 404.0, 168.0, 46.0);
 const SECONDARY_RIGHT: (f32, f32, f32, f32) = (190.0, 404.0, 168.0, 46.0);
 const SECONDARY_WIDE: (f32, f32, f32, f32) = (14.0, 404.0, 344.0, 46.0);
 const DEVICE_ROWS: usize = 4;
+const MONTH_ROW: (f32, f32, f32, f32) = (14.0, 182.0, 344.0, ROW_HEIGHT);
+const MONTH_SAVE: (f32, f32) = (338.0, 209.0);
 const TARIFF_DOWN: (f32, f32) = (256.0, 333.0);
 const TARIFF_UP: (f32, f32) = (338.0, 333.0);
 
@@ -213,6 +215,8 @@ enum Hit {
     OpenEnergy,
     TariffDown,
     TariffUp,
+    EditMonth,
+    SaveMonth,
     Item(usize),
     Primary,
     Reopen,
@@ -228,6 +232,8 @@ pub enum Action {
     Hide,
     Autostart(bool),
     Tariff(f64),
+    /// This month's kWh as the SmartThings app shows it.
+    MonthUsed(f64),
     Login,
     ReopenLogin,
     CancelLogin,
@@ -432,6 +438,8 @@ pub struct Panel {
     tariff: f64,
     /// This month's kWh and the day counting started, when known.
     month: Option<(f64, String)>,
+    /// The month's kWh being typed, while editing.
+    editing: Option<String>,
     drag: Option<i64>,
     power: Ease,
     // The air direction, strength and pace glide to new settings instead of jumping.
@@ -463,6 +471,7 @@ impl Panel {
             energy: false,
             tariff: 0.9,
             month: None,
+            editing: None,
             drag: None,
             power: Ease { value: 0.0, target: 0.0 },
             air_pitch: Ease { value: scene::PITCH_REST, target: scene::PITCH_REST },
@@ -511,6 +520,7 @@ impl Panel {
 
     /// Frees the frame buffers while hidden and resets transient UI.
     pub fn hidden(&mut self) {
+        self.editing = None;
         self.menu = None;
         self.settings = false;
         self.energy = false;
@@ -750,10 +760,39 @@ impl Panel {
     }
 
     fn energy_hit(&self, x: f32, y: f32) -> Option<Hit> {
-        [(BACK_BUTTON, 20.0, Hit::Back), (TARIFF_DOWN, 16.0, Hit::TariffDown), (TARIFF_UP, 16.0, Hit::TariffUp)]
+        if self.editing.is_some() && inside_circle(x, y, MONTH_SAVE, 16.0) {
+            return Some(Hit::SaveMonth);
+        }
+        let round = [(BACK_BUTTON, 20.0, Hit::Back), (TARIFF_DOWN, 16.0, Hit::TariffDown), (TARIFF_UP, 16.0, Hit::TariffUp)]
             .into_iter()
             .find(|(center, radius, _)| inside_circle(x, y, *center, *radius))
-            .map(|(_, _, hit)| hit)
+            .map(|(_, _, hit)| hit);
+        round.or_else(|| (inside(x, y, MONTH_ROW) && self.device().is_some()).then_some(Hit::EditMonth))
+    }
+
+    /// Typing while the month is being edited: digits, one comma, backspace and Enter.
+    pub fn type_char(&mut self, typed: char) -> Vec<Action> {
+        let Some(text) = self.editing.as_mut() else { return Vec::new() };
+        match typed {
+            '0'..='9' if text.len() < 7 => text.push(typed),
+            ',' | '.' if !text.contains(',') && text.len() < 6 => text.push(','),
+            '\u{8}' => {
+                text.pop();
+            }
+            '\r' => return self.save_month(),
+            _ => return Vec::new(),
+        }
+        self.dirty = true;
+        Vec::new()
+    }
+
+    fn save_month(&mut self) -> Vec<Action> {
+        self.dirty = true;
+        let Some(text) = self.editing.take() else { return Vec::new() };
+        match text.replace(',', ".").parse::<f64>() {
+            Ok(kwh) if kwh.is_finite() => vec![Action::MonthUsed(kwh)],
+            _ => Vec::new(),
+        }
     }
 
     fn main_hit(&self, x: f32, y: f32) -> Option<Hit> {
@@ -890,6 +929,12 @@ impl Panel {
                 self.energy = true;
                 return Vec::new();
             }
+            Hit::EditMonth => {
+                let current = self.month.as_ref().map_or(0.0, |(kwh, _)| *kwh);
+                self.editing = Some(if current > 0.0 { decimal(current, 1) } else { String::new() });
+                return Vec::new();
+            }
+            Hit::SaveMonth => return self.save_month(),
             Hit::TariffDown | Hit::TariffUp => {
                 let step = if hit == Hit::TariffUp { 0.01 } else { -0.01 };
                 self.tariff = ((self.tariff + step) * 100.0).round().clamp(10.0, 500.0) / 100.0;
@@ -931,6 +976,9 @@ impl Panel {
 
     pub fn escape(&mut self) -> Vec<Action> {
         self.dirty = true;
+        if self.editing.take().is_some() {
+            return Vec::new();
+        }
         if self.menu.take().is_some() {
             return Vec::new();
         }
@@ -1376,11 +1424,12 @@ impl Panel {
         }
         canvas.icon("zap", x + 24.0, cy, 18.0, p.muted);
         canvas.text("Consumo", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
-        let spent = self.field("energia").as_f64().map(|kwh| format!("{} no total", money(kwh * self.tariff)));
+        let spent = self.month.as_ref().map(|(kwh, _)| format!("{} este mês", money(kwh * self.tariff)));
         let summary = match (spent, self.field("potencia").as_f64()) {
             (Some(spent), Some(watts)) => format!("{spent} · {} W agora", watts.round()),
             (Some(spent), None) => spent,
-            (None, _) => "-".to_owned(),
+            (None, Some(watts)) => format!("{} W agora", watts.round()),
+            (None, None) => "-".to_owned(),
         };
         canvas.text(&summary, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
         canvas.icon("chevron-right", x + width - 22.0, cy, 15.0, p.faint);
@@ -1440,27 +1489,49 @@ impl Panel {
         };
         canvas.text(&measured, Style::Regular, 12.0, 30.0, 159.0, p.muted, Align::Left);
 
-        // Spent: this month and the unit's lifetime, priced at the user's kWh.
+        // This month in reais, which can be set from the SmartThings app, and the unit's lifetime counter.
         let (x, y, width) = (14.0, 182.0, 344.0);
         canvas.card(x, y, width, ROW_HEIGHT * 2.0, 16.0, p.card, p.line);
         canvas.fill(&rounded(x + 14.0, y + ROW_HEIGHT, width - 28.0, 1.0, 0.5), &solid(p.line));
-        let month_note = match &self.month {
-            Some((kwh, since)) if since.starts_with("01/") => format!("{} kWh", decimal(*kwh, 1)),
-            Some((kwh, since)) => format!("{} kWh desde {since}", decimal(*kwh, 1)),
-            None => "-".to_owned(),
-        };
-        let total = self.field("energia").as_f64();
-        let rows = [
-            ("calendar", "Este mês", month_note, self.month.as_ref().map(|(kwh, _)| money(kwh * self.tariff))),
-            ("air-vent", "Total do aparelho", total.map_or_else(|| "-".to_owned(), |kwh| format!("{} kWh", decimal(kwh, 1))), total.map(|kwh| money(kwh * self.tariff))),
-        ];
-        for (index, (icon, title, note, value)) in rows.into_iter().enumerate() {
-            let cy = y + ROW_HEIGHT * index as f32 + ROW_HEIGHT / 2.0;
-            canvas.icon(icon, x + 24.0, cy, 17.0, p.muted);
-            canvas.text(title, Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
-            canvas.text(&note, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
-            canvas.text(&value.unwrap_or_else(|| "-".to_owned()), Style::Semibold, 15.0, x + width - 18.0, cy + 5.0, p.text, Align::Right);
+        let cy = y + ROW_HEIGHT / 2.0;
+        if self.hovered(Hit::EditMonth) && self.editing.is_none() {
+            canvas.fill(&rounded(x + 4.0, y + 4.0, width - 8.0, ROW_HEIGHT - 8.0, 12.0), &solid(p.card_hover));
         }
+        canvas.icon("calendar", x + 24.0, cy, 17.0, p.muted);
+        match &self.editing {
+            Some(text) => {
+                canvas.text("Este mês", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+                canvas.text("kWh do app SmartThings", Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+                let (field_x, field_w) = (MONTH_SAVE.0 - 120.0, 96.0);
+                canvas.card(field_x, cy - 15.0, field_w, 30.0, 9.0, p.background, self.tint());
+                let shown_text = if text.is_empty() { "0" } else { text.as_str() };
+                let ink = if text.is_empty() { p.faint } else { p.text };
+                canvas.text(shown_text, Style::Semibold, 14.0, field_x + field_w - 36.0, cy + 5.0, ink, Align::Right);
+                canvas.fill(&rounded(field_x + field_w - 34.0, cy - 8.0, 1.5, 16.0, 0.75), &solid(self.tint()));
+                canvas.text("kWh", Style::Regular, 11.0, field_x + field_w - 8.0, cy + 4.0, p.muted, Align::Right);
+                let accent = self.tint();
+                canvas.fill(&circle(MONTH_SAVE.0, MONTH_SAVE.1, 14.0), &solid(accent));
+                canvas.icon("check", MONTH_SAVE.0, MONTH_SAVE.1, 14.0, on_accent(accent));
+            }
+            None => {
+                let note = match &self.month {
+                    Some((kwh, since)) if since.starts_with("01/") => format!("{} kWh", decimal(*kwh, 1)),
+                    Some((kwh, since)) => format!("{} kWh desde {since}", decimal(*kwh, 1)),
+                    None => "-".to_owned(),
+                };
+                canvas.text("Este mês", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+                canvas.text(&note, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+                let value = self.month.as_ref().map_or_else(|| "-".to_owned(), |(kwh, _)| money(kwh * self.tariff));
+                canvas.text(&value, Style::Semibold, 15.0, x + width - 40.0, cy + 5.0, p.text, Align::Right);
+                canvas.icon("pencil", x + width - 22.0, cy, 14.0, p.faint);
+            }
+        }
+        let cy = y + ROW_HEIGHT * 1.5;
+        canvas.icon("air-vent", x + 24.0, cy, 17.0, p.muted);
+        canvas.text("Desde a instalação", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+        canvas.text("Contador do próprio aparelho", Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+        let total = self.field("energia").as_f64().map_or_else(|| "-".to_owned(), |kwh| format!("{} kWh", decimal(kwh, 1)));
+        canvas.text(&total, Style::Semibold, 15.0, x + width - 18.0, cy + 5.0, p.text, Align::Right);
 
         // The price of a kWh, set from the power bill.
         let (x, y, width, height) = (14.0, 302.0, 344.0, 62.0);
@@ -1475,8 +1546,9 @@ impl Panel {
         }
         canvas.text(&money(self.tariff), Style::Semibold, 13.5, (TARIFF_DOWN.0 + TARIFF_UP.0) / 2.0, cy + 5.0, p.text, Align::Center);
 
-        canvas.text("Os valores são estimados: energia gasta vezes o preço do kWh.", Style::Regular, 11.5, 18.0, 384.0, p.faint, Align::Left);
-        canvas.text("O mês conta a partir da primeira leitura feita nele.", Style::Regular, 11.5, 18.0, 400.0, p.faint, Align::Left);
+        canvas.text("Reais estimados: energia do mês vezes o preço do kWh.", Style::Regular, 11.5, 18.0, 384.0, p.faint, Align::Left);
+        canvas.text("A SmartThings não informa o mês, então o app conta as leituras.", Style::Regular, 11.5, 18.0, 400.0, p.faint, Align::Left);
+        canvas.text("Toque em Este mês para acertar pelo app SmartThings.", Style::Regular, 11.5, 18.0, 416.0, p.faint, Align::Left);
     }
 
     fn draw_button(&self, canvas: &mut Canvas, rect: (f32, f32, f32, f32), icon: Option<&str>, label: &str, primary: bool, hit: Hit) {
@@ -1701,6 +1773,15 @@ mod tests {
         assert_eq!(panel.screen(), Screen::Energy);
         assert_eq!(click(&mut panel, TARIFF_UP.0, TARIFF_UP.1), [Action::Tariff(0.91)]);
         assert_eq!(click(&mut panel, TARIFF_DOWN.0, TARIFF_DOWN.1), [Action::Tariff(0.9)]);
+        // The month can be set from the SmartThings app by typing its kWh.
+        let (x, y) = center(MONTH_ROW);
+        assert!(click(&mut panel, x - 60.0, y).is_empty());
+        assert_eq!(panel.editing.as_deref(), Some("12,5"));
+        for typed in ['\u{8}', '\u{8}', '\u{8}', '\u{8}', '5', '5', ',', '3', 'x'] {
+            assert!(panel.type_char(typed).is_empty());
+        }
+        assert_eq!(panel.type_char('\r'), [Action::MonthUsed(55.3)]);
+        assert!(panel.editing.is_none());
         assert!(panel.escape().is_empty());
         assert_eq!(panel.screen(), Screen::Settings);
     }
@@ -1825,6 +1906,17 @@ mod tests {
                 click(panel, x, y);
             });
         }
+        render("consumo-editando", &demo_view(), false, 1.0, &|panel| {
+            panel.set_energy(0.9, Some((0.0, "11/10".into())));
+            click(panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);
+            let (x, y) = center(settings_row(4));
+            click(panel, x, y);
+            let (x, y) = center(MONTH_ROW);
+            click(panel, x - 60.0, y);
+            for typed in ['5', '5', ',', '3'] {
+                panel.type_char(typed);
+            }
+        });
         for light in [false, true] {
             render("ajustes", &demo_view(), light, 1.0, &|panel| {
                 click(panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);
