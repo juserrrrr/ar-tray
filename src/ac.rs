@@ -238,6 +238,11 @@ impl CloudUnit {
         self.device.as_ref().map(|device| (device.id.clone(), device.nome.clone()))
     }
 
+    /// Whether a SmartThings session is stored.
+    pub fn has_cloud_session(&self) -> bool {
+        self.cloud.has_session()
+    }
+
     pub fn new(cloud: Cloud, device_file: PathBuf) -> Self {
         let device = fs::read(&device_file).ok().and_then(|json| serde_json::from_slice(&json).ok());
         Self { cloud, device_file, device }
@@ -379,7 +384,8 @@ fn order(changes: &[(String, Value)]) -> Vec<(String, Value)> {
     ordered
 }
 
-const LOCAL_CONFIRM: usize = 3;
+const LOCAL_CONFIRM: usize = 2;
+const LOCAL_CONFIRM_WAIT: Duration = Duration::from_millis(250);
 const DISCOVERY_COOLDOWN: Duration = Duration::from_secs(45);
 
 /// Controls the unit over the home network when it can, and through SmartThings otherwise. The
@@ -394,6 +400,8 @@ pub struct HybridUnit {
     session: Option<Link>,
     units: Vec<Found>,
     status: String,
+    /// Which path the last run used, for the panel: "rede" or "nuvem".
+    via: &'static str,
     cooldown_until: Option<Instant>,
 }
 
@@ -408,7 +416,7 @@ impl HybridUnit {
                 (None, "Não deu para preparar o controle local".to_owned())
             }
         };
-        Self { cloud, settings, identity, enabled, addr, session: None, units: Vec::new(), status, cooldown_until: None }
+        Self { cloud, settings, identity, enabled, addr, session: None, units: Vec::new(), status, via: "", cooldown_until: None }
     }
 
     fn can_do_locally(&self, changes: &[(String, Value)]) -> bool {
@@ -441,6 +449,8 @@ impl HybridUnit {
     }
 
     fn read_local(&mut self) -> Result<Device, String> {
+        // Keep the SmartThings label and id when an account is connected; otherwise the unit's own
+        // identity (set by localac::read) is enough, so no login is needed.
         let chosen = self.cloud.chosen();
         let link = self.open()?;
         let mut state = localac::read(link)?;
@@ -468,7 +478,7 @@ impl HybridUnit {
             if unconfirmed(changes, &state).is_empty() {
                 break;
             }
-            sleep(Duration::from_millis(400));
+            sleep(LOCAL_CONFIRM_WAIT);
             state = self.read_local()?;
         }
         let pending = unconfirmed(changes, &state);
@@ -506,16 +516,24 @@ impl Unit for HybridUnit {
                         if !self.status.starts_with("Achei") {
                             self.status = "Controlando pela rede".into();
                         }
+                        self.via = "rede";
                         return Ok(outcome);
                     }
                     Err(error) => {
                         log::line(format_args!("local: {error}"));
                         self.session = None;
+                        // With no account to fall back to, keep the panel on the unit and show the
+                        // error instead of sending the user to the Samsung login over a blip.
+                        if !self.cloud.has_cloud_session() {
+                            self.status = "O ar não respondeu na rede".into();
+                            return Err(Failure::Failed("O ar não respondeu na rede".into()));
+                        }
                         self.status = "Rede falhou agora, usando o SmartThings".into();
                     }
                 }
             }
         }
+        self.via = "nuvem";
         self.cloud.run(changes)
     }
 
@@ -575,6 +593,10 @@ impl Unit for HybridUnit {
             "addr": self.addr.map(|addr| addr.to_string()),
             "units": units,
             "status": self.status,
+            // So the panel offers the Samsung login only when there is no session and the user wants it.
+            "cloudConnected": self.cloud.has_cloud_session(),
+            // Which path the last command or refresh used, shown at the bottom of the panel.
+            "via": self.via,
         })
     }
 }

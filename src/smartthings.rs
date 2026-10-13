@@ -168,6 +168,11 @@ impl Cloud {
         Arc::clone(&self.control)
     }
 
+    /// Whether a SmartThings session is stored, so the panel can offer login only when wanted.
+    pub fn has_session(&self) -> bool {
+        self.session.is_some()
+    }
+
     pub fn logout(&mut self) {
         self.session = None;
         let _ = fs::remove_file(&self.session_file);

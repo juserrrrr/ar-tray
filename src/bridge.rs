@@ -10,7 +10,7 @@ use crate::ac::{Changes, Device, Failure, Outcome, Unit};
 use crate::log;
 use crate::smartthings::LoginControl;
 
-const FLUSH_DELAY: Duration = Duration::from_millis(600);
+const FLUSH_DELAY: Duration = Duration::from_millis(150);
 const POLL_VISIBLE: Duration = Duration::from_secs(15);
 const POLL_HIDDEN: Duration = Duration::from_secs(60);
 const STALE_AFTER: Duration = Duration::from_secs(5);

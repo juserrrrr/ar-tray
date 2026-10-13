@@ -123,7 +123,15 @@ pub fn read(link: &mut Link) -> Result<Device, String> {
         ("oscilacoes", supported(&SWINGS, &direction)),
         ("extras", supported(&EXTRAS, &convenient)),
     ];
-    Ok(fields.into_iter().map(|(key, value)| (key.to_owned(), value)).collect())
+    let mut device: Device = fields.into_iter().map(|(key, value)| (key.to_owned(), value)).collect();
+    // A stable identity straight from the unit, so the panel and the monthly energy work without the
+    // cloud. The caller replaces these with the SmartThings label when an account is connected.
+    let information = rep("/information/vs/0");
+    if let Some(serial) = text(&information, "x.com.samsung.da.serialNum").filter(|serial| !serial.is_empty()) {
+        device.insert("id".into(), json!(serial));
+    }
+    device.insert("nome".into(), json!("Ar-condicionado"));
+    Ok(device)
 }
 
 fn temp_from(temp_item: &Value, current: &Value) -> Value {
@@ -302,11 +310,16 @@ mod tests {
         let original = before["temp"].as_i64().expect("o ar deve informar a temperatura");
         let target = if original >= 24 { original - 1 } else { original + 1 };
         let (path, body) = write_for("temp", &json!(target)).unwrap();
-        assert!(link.post(&path, &body).unwrap().ok());
+        assert!(link.post(&path, &body).unwrap().ok(), "o ar deveria aceitar a escrita");
         std::thread::sleep(std::time::Duration::from_millis(1200));
         let after = read(&mut link).unwrap();
-        assert_eq!(after["temp"], json!(target), "a mudança deveria valer");
-        println!("mudou {original} -> {target} e confirmou");
+        // A running unit reflects the setpoint right away; a unit that is off holds it until it starts.
+        if before["ligado"] == json!(true) {
+            assert_eq!(after["temp"], json!(target), "a mudança deveria valer com o ar ligado");
+            println!("mudou {original} -> {target} e confirmou");
+        } else {
+            println!("ar desligado: escrita aceita, leitura {} (aplica ao ligar)", after["temp"]);
+        }
         // Put it back the way it was.
         let (path, body) = write_for("temp", &json!(original)).unwrap();
         assert!(link.post(&path, &body).unwrap().ok());

@@ -33,8 +33,9 @@ pub fn set_autostart(file: &Path, enabled: bool, demo: bool) {
 }
 
 /// Whether to control the unit over the home network first, with SmartThings as the fallback.
+/// On by default: the app looks for the air conditioner on the network before asking for the account.
 pub fn local_enabled(file: &Path) -> bool {
-    read(file)["local"]["ligado"].as_bool().unwrap_or(false)
+    read(file)["local"]["ligado"].as_bool().unwrap_or(true)
 }
 
 pub fn set_local_enabled(file: &Path, enabled: bool) {

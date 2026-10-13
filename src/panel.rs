@@ -217,6 +217,7 @@ enum Hit {
     Logout,
     OpenEnergy,
     OpenNetwork,
+    ConnectCloud,
     LocalToggle,
     LocalFind,
     LocalUnit(usize),
@@ -626,6 +627,10 @@ impl Panel {
         self.local()["enabled"].as_bool().unwrap_or(false)
     }
 
+    fn cloud_connected(&self) -> bool {
+        self.local()["cloudConnected"].as_bool().unwrap_or(false)
+    }
+
     fn local_units(&self) -> Vec<Value> {
         self.local()["units"].as_array().cloned().unwrap_or_default()
     }
@@ -714,7 +719,9 @@ impl Panel {
 
     fn status(&self) -> Status {
         let status = |tone, icon, text: &str, retry| Status { tone, icon, text: text.to_owned(), retry };
+        let on_network = self.local()["via"].as_str() == Some("rede");
         match self.view["error"]["kind"].as_str() {
+            Some("failed") if on_network => return status(Tone::Error, "cloud-off", "O ar não respondeu na rede", true),
             Some("failed") => return status(Tone::Error, "cloud-off", "O SmartThings não respondeu", true),
             Some("unconfirmed") => {
                 let keys: Vec<&str> = self.view["error"]["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(unconfirmed_name).collect();
@@ -723,7 +730,8 @@ impl Panel {
             _ => {}
         }
         if self.device().is_none() {
-            return status(Tone::Busy, "loader-circle", "Buscando o ar no SmartThings…", false);
+            let text = if self.local_enabled() { "Procurando o ar na rede…" } else { "Buscando o ar no SmartThings…" };
+            return status(Tone::Busy, "loader-circle", text, false);
         }
         if self.view["syncing"] == true {
             return status(Tone::Busy, "loader-circle", "Enviando ao ar…", false);
@@ -736,6 +744,9 @@ impl Panel {
         }
         if self.account() == "demo" {
             return status(Tone::Quiet, "sparkles", "Modo demonstração, sem conta Samsung", false);
+        }
+        if on_network {
+            return status(Tone::Ok, "signal", "Ligado ao ar pela rede", false);
         }
         status(Tone::Ok, "shield-check", "Conectado ao SmartThings", false)
     }
@@ -770,6 +781,13 @@ impl Panel {
 
     fn hit(&self, x: f32, y: f32) -> Option<Hit> {
         match self.screen() {
+            Screen::SignIn if self.local_enabled() => {
+                if inside(x, y, PRIMARY) {
+                    Some(Hit::LocalFind)
+                } else {
+                    inside(x, y, SECONDARY_WIDE).then_some(Hit::Primary)
+                }
+            }
             Screen::SignIn => inside(x, y, PRIMARY).then_some(Hit::Primary),
             Screen::Waiting => [(SECONDARY_LEFT, Hit::Reopen), (SECONDARY_RIGHT, Hit::Cancel)].into_iter().find(|(rect, _)| inside(x, y, *rect)).map(|(_, hit)| hit),
             Screen::Choose => (0..self.devices().len()).find(|&index| inside(x, y, device_row(index))).map(Hit::Device),
@@ -797,7 +815,14 @@ impl Panel {
         if self.account() == "demo" {
             return None;
         }
-        [(6, Hit::ChangeDevice), (7, Hit::Logout)].into_iter().find(|(row, _)| inside(x, y, settings_row(*row))).map(|(_, hit)| hit)
+        // With a Samsung session: change unit or sign out. Without one: offer to connect, since the
+        // app already works through the network.
+        let rows: &[(usize, Hit)] = if self.cloud_connected() {
+            &[(6, Hit::ChangeDevice), (7, Hit::Logout)]
+        } else {
+            &[(6, Hit::ConnectCloud)]
+        };
+        rows.iter().copied().find(|(row, _)| inside(x, y, settings_row(*row))).map(|(_, hit)| hit)
     }
 
     fn network_hit(&self, x: f32, y: f32) -> Option<Hit> {
@@ -987,7 +1012,12 @@ impl Panel {
             }
             Hit::OpenNetwork => {
                 self.network = true;
-                return Vec::new();
+                // Look for the air conditioner by itself when the list is still empty.
+                return if self.local_units().is_empty() { vec![Action::FindLocal] } else { Vec::new() };
+            }
+            Hit::ConnectCloud => {
+                self.settings = false;
+                Action::Login
             }
             Hit::LocalToggle => Action::SetLocal(!self.local_enabled()),
             Hit::LocalFind => Action::FindLocal,
@@ -1439,7 +1469,7 @@ impl Panel {
         group(canvas, 5, 1);
         group(canvas, 8, 1);
         if !demo {
-            group(canvas, 6, 2);
+            group(canvas, 6, if self.cloud_connected() { 2 } else { 1 });
         }
         let hover_row = |canvas: &mut Canvas, rect: (f32, f32, f32, f32)| {
             canvas.fill(&rounded(rect.0 + 4.0, rect.1 + 4.0, rect.2 - 8.0, rect.3 - 8.0, 12.0), &solid(p.card_hover));
@@ -1527,10 +1557,17 @@ impl Panel {
         if demo {
             return;
         }
-        for (row, hit, icon, title, color) in [
-            (6, Hit::ChangeDevice, "arrow-left-right", "Trocar de aparelho", p.text),
-            (7, Hit::Logout, "log-out", "Sair da conta Samsung", p.danger),
-        ] {
+        // With a Samsung session: change unit or sign out. Without one: a single row to connect, since
+        // the app already runs through the network.
+        let account_rows: &[(usize, Hit, &str, &str, Rgba)] = if self.cloud_connected() {
+            &[
+                (6, Hit::ChangeDevice, "arrow-left-right", "Trocar de aparelho", p.text),
+                (7, Hit::Logout, "log-out", "Sair da conta Samsung", p.danger),
+            ]
+        } else {
+            &[(6, Hit::ConnectCloud, "log-in", "Conectar conta Samsung", p.text)]
+        };
+        for &(row, hit, icon, title, color) in account_rows {
             let rect @ (x, y, width, height) = settings_row(row);
             let cy = y + height / 2.0;
             if self.hovered(hit) {
@@ -1717,10 +1754,15 @@ impl Panel {
         let p = self.palette;
         self.draw_background(canvas, 0.0);
         canvas.text("Painel do Ar", Style::Semibold, 15.0, 18.0, 30.0, p.text, Align::Left);
-        canvas.text("Conta Samsung SmartThings", Style::Regular, 12.0, 18.0, 47.0, p.muted, Align::Left);
+        let subtitle = if screen == Screen::SignIn && self.local_enabled() { "Controle pela rede local" } else { "Conta Samsung SmartThings" };
+        canvas.text(subtitle, Style::Regular, 12.0, 18.0, 47.0, p.muted, Align::Left);
         self.draw_hero(canvas, false);
 
+        let local_first = screen == Screen::SignIn && self.local_enabled();
         let (title, body): (&str, [&str; 2]) = match screen {
+            Screen::SignIn if local_first => {
+                ("Procurando o ar na rede", ["Veja se o ar está ligado e toque em Procurar.", "Ou conecte a conta Samsung, se preferir."])
+            }
             Screen::SignIn => ("Conecte sua conta Samsung", ["O Painel do Ar usa o SmartThings para ler", "e controlar o seu ar-condicionado."]),
             Screen::Waiting => ("Continue no navegador", ["Entre na sua conta Samsung na aba que abriu.", "O painel se conecta sozinho quando terminar."]),
             Screen::Choose => ("Escolha o ar-condicionado", ["Sua conta tem mais de um aparelho.", "Dá para trocar depois nos ajustes."]),
@@ -1731,6 +1773,16 @@ impl Panel {
         canvas.text(body[1], Style::Regular, 13.0, WIDTH / 2.0, CONNECT_TITLE_Y + 42.0, p.muted, Align::Center);
 
         let (footer_icon, footer, footer_color) = match screen {
+            Screen::SignIn if local_first => {
+                self.draw_button(canvas, PRIMARY, Some("search"), "Procurar o ar na rede", true, Hit::LocalFind);
+                self.draw_button(canvas, SECONDARY_WIDE, Some("log-in"), "Conectar conta Samsung", false, Hit::Primary);
+                let status = self.local()["status"].as_str().unwrap_or("");
+                if !status.is_empty() {
+                    ("signal", status, p.muted)
+                } else {
+                    ("signal", "O ar precisa estar na mesma rede", p.muted)
+                }
+            }
             Screen::SignIn => {
                 self.draw_button(canvas, PRIMARY, Some("log-in"), "Entrar com a conta Samsung", true, Hit::Primary);
                 let (x, y, width, _) = SECONDARY_WIDE;
@@ -1800,6 +1852,7 @@ mod tests {
                 "modos": ["cool", "dry", "wind", "auto", "heat"], "extras": ["off", "windFree", "windFreeSleep", "sleep", "speed"],
             },
             "syncing": false, "held": [], "error": null, "updatedAt": 0, "account": "ready", "devices": [], "loginError": false,
+            "local": { "enabled": true, "cloudConnected": true, "via": "rede" },
         })
     }
 
@@ -2079,5 +2132,15 @@ mod tests {
                 click(panel, x, y);
             });
         }
+        // The sign-in screen leading with the network search, since local is on.
+        let mut signin_local = account_view("signedOut");
+        signin_local["local"] = json!({ "enabled": true, "status": "Nenhum ar encontrado na rede", "cloudConnected": false });
+        render("entrar-local", &signin_local, false, 1.0, &|_| {});
+        // Ajustes with no Samsung session: a single row to connect if wanted.
+        let mut local_only = demo_view();
+        local_only["local"] = json!({ "enabled": true, "cloudConnected": false, "via": "rede", "addr": "192.168.1.102:49154" });
+        render("ajustes-local", &local_only, false, 1.0, &|panel| {
+            click(panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);
+        });
     }
 }

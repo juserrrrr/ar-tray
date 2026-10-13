@@ -62,11 +62,13 @@ Para gerar o exe de uma release sem caminhos da máquina dentro dele, rode `powe
 
 ## Controle local pela rede
 
-Por padrão os comandos passam pela nuvem da SmartThings. Em **Ajustes > Controle local** dá para ligar o modo que fala direto com o ar pela rede de casa, com a nuvem como reserva. Toque em **Procurar o ar na rede** para achar o aparelho e, se houver mais de um, escolha qual controlar.
+Por padrão o app **procura o ar na rede sozinho** e, achando, controla direto, sem pedir a conta Samsung. A conta só é necessária se o ar não for encontrado na rede, ou se você quiser conectá-la em **Ajustes > Conectar conta Samsung**. No rodapé aparece a via ativa: "Ligado ao ar pela rede" ou "Conectado ao SmartThings".
 
-Com o controle local ligado, cada comando vai direto ao ar em menos de meio segundo e o estado é lido na hora, sem esperar a nuvem. Se o ar não responder na rede, o app volta sozinho para a SmartThings naquele comando.
+Com o controle local, cada comando vai direto ao ar em uma fração de segundo e o estado é lido na hora. Se o ar não responder na rede e houver uma conta conectada, o app usa a SmartThings como reserva naquele comando.
 
-O ar aceita a conexão local porque o app apresenta a mesma identidade (um certificado gerado no próprio PC) que a nuvem da Samsung usa. Essa parte segue o que os projetos [LocalThings](https://github.com/mbillow/localthings) e [SmartThings-Local](https://github.com/QuiteYellow/SmartThings-Local) descobriram. Não é um recurso oficial da Samsung: uma atualização do aparelho pode fechar esse caminho, e por isso ele vem desligado. O ar precisa continuar cadastrado na conta SmartThings. Vale reservar o IP do ar no roteador, porque a porta dele pode mudar quando reinicia; se isso acontecer, o app procura de novo sozinho.
+Em **Ajustes > Controle local** dá para ligar ou desligar esse modo, procurar o ar de novo e, se houver mais de um, escolher qual controlar.
+
+O ar aceita a conexão local porque o app apresenta a mesma identidade (um certificado gerado no próprio PC) que a nuvem da Samsung usa. Essa parte segue o que os projetos [LocalThings](https://github.com/mbillow/localthings) e [SmartThings-Local](https://github.com/QuiteYellow/SmartThings-Local) descobriram. Não é um recurso oficial da Samsung: uma atualização do aparelho pode fechar esse caminho. O ar precisa continuar cadastrado na conta SmartThings. Vale reservar o IP do ar no roteador, porque a porta dele pode mudar quando reinicia; se isso acontecer, o app procura de novo sozinho.
 
 Em **Ajustes > Consumo** aparecem a potência agora, o gasto do mês em kWh e em reais, e o contador do aparelho desde a instalação. Os reais são estimados com o preço do kWh que você ajusta ali, pela conta de luz. A potência não é ao vivo: o ar manda a leitura à SmartThings a cada 5 minutos.
 
