@@ -1,6 +1,6 @@
 [package]
 name = "ar-tray"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Painel na bandeja do Windows para controlar um ar-condicionado Samsung pelo SmartThings"
@@ -19,6 +19,11 @@ svgtypes = "0.16"
 sha2 = "0.11"
 base64 = "0.23"
 getrandom = "0.4"
+# Local (no-cloud) control of the unit over DTLS 1.2 + CoAP.
+rtc-dtls = "=0.21.1"
+rtc-shared = { version = "=0.21.1", default-features = false }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+bytes = "1"
 
 [dependencies.windows-sys]
 version = "0.61"

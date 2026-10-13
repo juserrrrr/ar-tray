@@ -413,6 +413,9 @@ impl App {
                 Action::Choose(id, name) => self.bridge.choose_device(&id, name.as_deref()),
                 Action::ChangeDevice => self.bridge.change_device(),
                 Action::Logout => self.bridge.logout(),
+                Action::SetLocal(enabled) => self.bridge.set_local(enabled),
+                Action::FindLocal => self.bridge.find_local(),
+                Action::ChooseLocal(addr) => self.bridge.choose_local(&addr),
             }
         }
         self.invalidate();

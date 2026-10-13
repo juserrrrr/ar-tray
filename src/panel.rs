@@ -106,6 +106,8 @@ const SECONDARY_RIGHT: (f32, f32, f32, f32) = (190.0, 404.0, 168.0, 46.0);
 const SECONDARY_WIDE: (f32, f32, f32, f32) = (14.0, 404.0, 344.0, 46.0);
 const DEVICE_ROWS: usize = 4;
 const MONTH_ROW: (f32, f32, f32, f32) = (14.0, 182.0, 344.0, ROW_HEIGHT);
+const NETWORK_TOGGLE: (f32, f32, f32, f32) = (14.0, 74.0, 344.0, ROW_HEIGHT);
+const NETWORK_FIND: (f32, f32, f32, f32) = (14.0, 150.0, 344.0, 44.0);
 const MONTH_SAVE: (f32, f32) = (338.0, 209.0);
 const TARIFF_DOWN: (f32, f32) = (256.0, 333.0);
 const TARIFF_UP: (f32, f32) = (338.0, 333.0);
@@ -192,6 +194,7 @@ enum Screen {
     Main,
     Settings,
     Energy,
+    Network,
     SignIn,
     Waiting,
     Choose,
@@ -213,6 +216,10 @@ enum Hit {
     ChangeDevice,
     Logout,
     OpenEnergy,
+    OpenNetwork,
+    LocalToggle,
+    LocalFind,
+    LocalUnit(usize),
     TariffDown,
     TariffUp,
     EditMonth,
@@ -240,6 +247,12 @@ pub enum Action {
     Choose(String, Option<String>),
     ChangeDevice,
     Logout,
+    /// Turn the home-network path on or off.
+    SetLocal(bool),
+    /// Look for air conditioners on the network.
+    FindLocal,
+    /// Pick the unit at this address for the network path.
+    ChooseLocal(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -411,18 +424,23 @@ fn epoch_seconds(iso: &str) -> Option<i64> {
 }
 
 fn settings_row(index: usize) -> (f32, f32, f32, f32) {
-    // Three switches, then filter and energy, then autostart, then the account.
+    // Three switches, then filter and energy, then autostart and the network entry, then the account.
     let y = match index {
         0..=2 => 68.0 + index as f32 * ROW_HEIGHT,
         3 | 4 => 246.0 + (index - 3) as f32 * ROW_HEIGHT,
-        5 => 370.0,
-        _ => 440.0 + (index - 6) as f32 * ROW_HEIGHT,
+        5 => 362.0,
+        8 => 416.0,
+        _ => 486.0 + (index - 6) as f32 * ROW_HEIGHT,
     };
     (14.0, y, 344.0, ROW_HEIGHT)
 }
 
 fn device_row(index: usize) -> (f32, f32, f32, f32) {
     (14.0, PRIMARY.1 + index as f32 * 54.0, 344.0, 48.0)
+}
+
+fn network_unit_row(index: usize) -> (f32, f32, f32, f32) {
+    (14.0, 214.0 + index as f32 * 56.0, 344.0, 50.0)
 }
 
 pub struct Panel {
@@ -435,6 +453,8 @@ pub struct Panel {
     settings: bool,
     /// The Consumo page, opened from the settings.
     energy: bool,
+    /// The Rede page, opened from the settings.
+    network: bool,
     tariff: f64,
     /// This month's kWh and the day counting started, when known.
     month: Option<(f64, String)>,
@@ -469,6 +489,7 @@ impl Panel {
             menu: None,
             settings: false,
             energy: false,
+            network: false,
             tariff: 0.9,
             month: None,
             editing: None,
@@ -502,6 +523,7 @@ impl Panel {
         if self.account_screen().is_some() {
             self.settings = false;
             self.energy = false;
+            self.network = false;
         }
         self.dirty = true;
     }
@@ -524,6 +546,7 @@ impl Panel {
         self.menu = None;
         self.settings = false;
         self.energy = false;
+        self.network = false;
         self.hover = None;
         self.pressed = None;
         self.drag = None;
@@ -571,7 +594,9 @@ impl Panel {
     }
 
     fn screen(&self) -> Screen {
-        let page = if self.energy {
+        let page = if self.network {
+            Screen::Network
+        } else if self.energy {
             Screen::Energy
         } else if self.settings {
             Screen::Settings
@@ -591,6 +616,18 @@ impl Panel {
 
     fn device(&self) -> Option<&Map<String, Value>> {
         self.view["device"].as_object()
+    }
+
+    fn local(&self) -> &Value {
+        &self.view["local"]
+    }
+
+    fn local_enabled(&self) -> bool {
+        self.local()["enabled"].as_bool().unwrap_or(false)
+    }
+
+    fn local_units(&self) -> Vec<Value> {
+        self.local()["units"].as_array().cloned().unwrap_or_default()
     }
 
     fn field(&self, key: &str) -> &Value {
@@ -739,6 +776,7 @@ impl Panel {
             Screen::NoDevice => [(PRIMARY, Hit::Primary), (SECONDARY_WIDE, Hit::OtherAccount)].into_iter().find(|(rect, _)| inside(x, y, *rect)).map(|(_, hit)| hit),
             Screen::Settings => self.settings_hit(x, y),
             Screen::Energy => self.energy_hit(x, y),
+            Screen::Network => self.network_hit(x, y),
             Screen::Main => self.main_hit(x, y),
         }
     }
@@ -753,10 +791,26 @@ impl Panel {
         if inside(x, y, settings_row(4)) {
             return Some(Hit::OpenEnergy);
         }
+        if inside(x, y, settings_row(8)) {
+            return Some(Hit::OpenNetwork);
+        }
         if self.account() == "demo" {
             return None;
         }
         [(6, Hit::ChangeDevice), (7, Hit::Logout)].into_iter().find(|(row, _)| inside(x, y, settings_row(*row))).map(|(_, hit)| hit)
+    }
+
+    fn network_hit(&self, x: f32, y: f32) -> Option<Hit> {
+        if inside_circle(x, y, BACK_BUTTON, 20.0) {
+            return Some(Hit::Back);
+        }
+        if inside(x, y, NETWORK_TOGGLE) {
+            return Some(Hit::LocalToggle);
+        }
+        if inside(x, y, NETWORK_FIND) {
+            return Some(Hit::LocalFind);
+        }
+        (0..self.local_units().len()).find(|index| inside(x, y, network_unit_row(*index))).map(Hit::LocalUnit)
     }
 
     fn energy_hit(&self, x: f32, y: f32) -> Option<Hit> {
@@ -918,7 +972,9 @@ impl Panel {
                 return Vec::new();
             }
             Hit::Back => {
-                if self.energy {
+                if self.network {
+                    self.network = false;
+                } else if self.energy {
                     self.energy = false;
                 } else {
                     self.settings = false;
@@ -929,6 +985,16 @@ impl Panel {
                 self.energy = true;
                 return Vec::new();
             }
+            Hit::OpenNetwork => {
+                self.network = true;
+                return Vec::new();
+            }
+            Hit::LocalToggle => Action::SetLocal(!self.local_enabled()),
+            Hit::LocalFind => Action::FindLocal,
+            Hit::LocalUnit(index) => match self.local_units().get(index).and_then(|unit| unit["addr"].as_str()) {
+                Some(addr) => Action::ChooseLocal(addr.to_owned()),
+                None => return Vec::new(),
+            },
             Hit::EditMonth => {
                 let current = self.month.as_ref().map_or(0.0, |(kwh, _)| *kwh);
                 self.editing = Some(if current > 0.0 { decimal(current, 1) } else { String::new() });
@@ -983,6 +1049,7 @@ impl Panel {
             return Vec::new();
         }
         match self.screen() {
+            Screen::Network => self.network = false,
             Screen::Energy => self.energy = false,
             Screen::Settings => self.settings = false,
             _ => return vec![Action::Hide],
@@ -1067,6 +1134,7 @@ impl Panel {
                     Screen::Main => self.draw_main(&mut canvas),
                     Screen::Settings => self.draw_settings(&mut canvas),
                     Screen::Energy => self.draw_energy(&mut canvas),
+                    Screen::Network => self.draw_network(&mut canvas),
                     _ => self.draw_connect(&mut canvas, screen),
                 }
                 base
@@ -1369,6 +1437,7 @@ impl Panel {
         group(canvas, 0, 3);
         group(canvas, 3, 2);
         group(canvas, 5, 1);
+        group(canvas, 8, 1);
         if !demo {
             group(canvas, 6, 2);
         }
@@ -1442,6 +1511,18 @@ impl Panel {
         canvas.icon("monitor", x + 24.0, cy, 18.0, p.muted);
         canvas.text("Iniciar com o Windows", Style::Regular, 14.0, x + 46.0, cy + 5.0, p.text, Align::Left);
         self.draw_switch(canvas, x + width - 54.0, cy, self.autostart, true);
+
+        // Local network control: a summary that opens the Rede page.
+        let rect @ (x, y, width, height) = settings_row(8);
+        let cy = y + height / 2.0;
+        if self.hovered(Hit::OpenNetwork) {
+            hover_row(canvas, rect);
+        }
+        canvas.icon("signal", x + 24.0, cy, 18.0, p.muted);
+        canvas.text("Controle local", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+        let note = if self.local_enabled() { "Enviando direto ao ar pela rede" } else { "Pela nuvem da Samsung" };
+        canvas.text(note, Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+        canvas.icon("chevron-right", x + width - 22.0, cy, 15.0, p.faint);
 
         if demo {
             return;
@@ -1549,6 +1630,65 @@ impl Panel {
         canvas.text("Reais estimados: energia do mês vezes o preço do kWh.", Style::Regular, 11.5, 18.0, 384.0, p.faint, Align::Left);
         canvas.text("A SmartThings não informa o mês, então o app conta as leituras.", Style::Regular, 11.5, 18.0, 400.0, p.faint, Align::Left);
         canvas.text("Toque em Este mês para acertar pelo app SmartThings.", Style::Regular, 11.5, 18.0, 416.0, p.faint, Align::Left);
+    }
+
+    /// Rede: the network-first switch, a search button and the air conditioners found, the chosen one
+    /// marked. The network path sends commands straight to the unit, with SmartThings as the fallback.
+    fn draw_network(&mut self, canvas: &mut Canvas) {
+        let p = self.palette;
+        self.draw_background(canvas, 0.0);
+        let fonts = fonts();
+        let (bx, by) = BACK_BUTTON;
+        if self.hovered(Hit::Back) {
+            canvas.fill(&circle(bx, by, 18.0), &solid(p.card_hover));
+        }
+        canvas.icon("chevron-left", bx, by, 20.0, p.text);
+        canvas.text("Controle local", Style::Medium, 17.0, 58.0, 31.0, p.text, Align::Left);
+        canvas.text("Direto ao ar pela rede, sem a nuvem", Style::Regular, 12.0, 58.0, 47.0, p.muted, Align::Left);
+
+        // The network-first switch.
+        let (x, y, width, height) = NETWORK_TOGGLE;
+        let cy = y + height / 2.0;
+        canvas.card(x, y, width, height, 16.0, p.card, p.line);
+        if self.hovered(Hit::LocalToggle) {
+            canvas.fill(&rounded(x + 4.0, y + 4.0, width - 8.0, height - 8.0, 12.0), &solid(p.card_hover));
+        }
+        canvas.icon("signal", x + 24.0, cy, 18.0, p.muted);
+        canvas.text("Tentar a rede primeiro", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+        canvas.text("A nuvem fica como reserva", Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+        self.draw_switch(canvas, x + width - 54.0, cy, self.local_enabled(), true);
+
+        // Search for units on the network.
+        self.draw_button(canvas, NETWORK_FIND, Some("search"), "Procurar o ar na rede", false, Hit::LocalFind);
+
+        let status = self.local()["status"].as_str().unwrap_or("");
+        if !status.is_empty() {
+            canvas.text(&fonts.fit(status, Style::Regular, 12.5, 336.0), Style::Regular, 12.5, 18.0, 206.0, p.muted, Align::Left);
+        }
+
+        // The units found, with the chosen one checked.
+        let chosen = self.local()["addr"].as_str();
+        let units = self.local_units();
+        for (index, unit) in units.iter().enumerate() {
+            let (x, y, width, height) = network_unit_row(index);
+            let hovered = self.hovered(Hit::LocalUnit(index));
+            canvas.card(x, y, width, height, 14.0, if hovered { p.card_hover } else { p.card }, p.line);
+            let addr = unit["addr"].as_str().unwrap_or("");
+            let is_chosen = Some(addr) == chosen;
+            canvas.fill(&rounded(x + 10.0, y + 10.0, 30.0, 30.0, 10.0), &solid(p.track.alpha(0.8)));
+            canvas.icon("air-vent", x + 25.0, y + 25.0, 16.0, if is_chosen { self.tint() } else { p.text });
+            let name = unit["nome"].as_str().unwrap_or("Ar-condicionado");
+            canvas.text(&fonts.fit(name, Style::Semibold, 14.0, width - 96.0), Style::Semibold, 14.0, x + 52.0, y + 22.0, p.text, Align::Left);
+            canvas.text(addr, Style::Regular, 11.5, x + 52.0, y + 38.0, p.muted, Align::Left);
+            if is_chosen {
+                canvas.icon("check", x + width - 24.0, y + 25.0, 17.0, self.tint());
+            }
+        }
+        if units.is_empty() {
+            canvas.text("Toque em Procurar para achar o ar na rede.", Style::Regular, 12.5, 18.0, 230.0, p.faint, Align::Left);
+        }
+
+        canvas.text("A primeira busca pode levar alguns segundos.", Style::Regular, 11.5, 18.0, 598.0, p.faint, Align::Left);
     }
 
     fn draw_button(&self, canvas: &mut Canvas, rect: (f32, f32, f32, f32), icon: Option<&str>, label: &str, primary: bool, hit: Hit) {
@@ -1920,6 +2060,23 @@ mod tests {
         for light in [false, true] {
             render("ajustes", &demo_view(), light, 1.0, &|panel| {
                 click(panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);
+            });
+        }
+        let mut with_local = demo_view();
+        with_local["local"] = json!({
+            "enabled": true,
+            "addr": "192.168.1.102:49154",
+            "status": "Achei Ar da sala na rede",
+            "units": [
+                { "addr": "192.168.1.102:49154", "nome": "Ar da sala", "modelo": "TP1X_DA-AC-RAC-01001_0000" },
+                { "addr": "192.168.1.110:49153", "nome": "Ar do quarto", "modelo": "TP1X_DA-AC-RAC-01001_0000" },
+            ],
+        });
+        for light in [false, true] {
+            render("rede", &with_local, light, 1.0, &|panel| {
+                click(panel, SETTINGS_BUTTON.0, SETTINGS_BUTTON.1);
+                let (x, y) = center(settings_row(8));
+                click(panel, x, y);
             });
         }
     }

@@ -58,7 +58,15 @@ Para gerar o exe de uma release sem caminhos da máquina dentro dele, rode `powe
 - **Modo**: um toque na fileira de modos. Aparecem só os modos que o aparelho aceita.
 - **Vento e Direção**: abrem uma lista com as opções do aparelho.
 - **WindFree, Sono e Turbo**: ligam e desligam direto. O Turbo é o resfriamento rápido da Samsung: roda por um tempo e volta sozinho para o ajuste anterior, sem mudar temperatura nem vento. Enquanto ele roda, o aparelho trava a temperatura e o vento, e o painel deixa esses controles apagados. Os três ficam apagados nos aparelhos que não têm.
-- **Ajustes** (canto de baixo): luz do display, bipe, secagem automática, filtro, consumo, abrir com o Windows, trocar de aparelho e sair da conta Samsung.
+- **Ajustes** (canto de baixo): luz do display, bipe, secagem automática, filtro, consumo, abrir com o Windows, controle local, trocar de aparelho e sair da conta Samsung.
+
+## Controle local pela rede
+
+Por padrão os comandos passam pela nuvem da SmartThings. Em **Ajustes > Controle local** dá para ligar o modo que fala direto com o ar pela rede de casa, com a nuvem como reserva. Toque em **Procurar o ar na rede** para achar o aparelho e, se houver mais de um, escolha qual controlar.
+
+Com o controle local ligado, cada comando vai direto ao ar em menos de meio segundo e o estado é lido na hora, sem esperar a nuvem. Se o ar não responder na rede, o app volta sozinho para a SmartThings naquele comando.
+
+O ar aceita a conexão local porque o app apresenta a mesma identidade (um certificado gerado no próprio PC) que a nuvem da Samsung usa. Essa parte segue o que os projetos [LocalThings](https://github.com/mbillow/localthings) e [SmartThings-Local](https://github.com/QuiteYellow/SmartThings-Local) descobriram. Não é um recurso oficial da Samsung: uma atualização do aparelho pode fechar esse caminho, e por isso ele vem desligado. O ar precisa continuar cadastrado na conta SmartThings. Vale reservar o IP do ar no roteador, porque a porta dele pode mudar quando reinicia; se isso acontecer, o app procura de novo sozinho.
 
 Em **Ajustes > Consumo** aparecem a potência agora, o gasto do mês em kWh e em reais, e o contador do aparelho desde a instalação. Os reais são estimados com o preço do kWh que você ajusta ali, pela conta de luz. A potência não é ao vivo: o ar manda a leitura à SmartThings a cada 5 minutos.
 
@@ -85,7 +93,8 @@ Tudo fica em `%APPDATA%\dev.ar-tray.desktop`:
 ## Como funciona
 
 - `src/smartthings.rs`: login no navegador e chamadas da API. Usa o mesmo cliente público (PKCE) da [CLI oficial da SmartThings](https://github.com/SmartThingsCommunity/smartthings-cli), que renova o acesso sozinho e só pede login de novo depois de 30 dias sem uso.
-- `src/ac.rs`: transforma os ajustes em comandos e confere se o ar aplicou cada um.
+- `src/ac.rs`: transforma os ajustes em comandos e confere se o ar aplicou cada um. A `HybridUnit` tenta a rede primeiro e usa a SmartThings como reserva.
+- `src/local.rs`: a conexão segura com o ar na rede (DTLS 1.2 com [rtc-dtls](https://github.com/webrtc-rs/rtc) e CoAP). `src/localac.rs` mapeia os recursos do ar para os campos do painel e acha o aparelho na rede. `src/cbor.rs` lê e escreve o formato que o ar usa.
 - `src/bridge.rs`: estado da conta, fila de comandos e atualização, a cada 15 segundos com o painel aberto e 60 com ele fechado.
 - `src/shell.rs`: ícone e menu da bandeja, janela do painel, pintura e entrada.
 - `src/panel.rs`: layout, desenho e cliques do painel e das telas de conexão. `src/scene.rs` desenha o aparelho e o vento.

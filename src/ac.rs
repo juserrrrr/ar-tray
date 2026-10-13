@@ -1,14 +1,19 @@
 //! Turns panel changes into SmartThings commands and reads the unit back.
 
 use std::fs;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::local::{Identity, Link};
+use crate::localac::{self, Found};
+use crate::log;
+use crate::settings;
 use crate::smartthings::{Cloud, CloudError, Command, LoginControl};
 
 pub type Device = Map<String, Value>;
@@ -70,6 +75,20 @@ pub trait Unit: Send {
 
     fn is_demo(&self) -> bool {
         false
+    }
+
+    /// Turns the home-network path on or off.
+    fn set_local(&mut self, _enabled: bool) {}
+
+    /// Looks for air conditioners on the network.
+    fn find_local(&mut self) {}
+
+    /// Picks the unit at this address for the network path.
+    fn choose_local(&mut self, _addr: &str) {}
+
+    /// The network path's state for the panel: enabled, address, found units and a status line.
+    fn local_view(&self) -> Value {
+        Value::Null
     }
 }
 
@@ -214,6 +233,11 @@ pub struct CloudUnit {
 }
 
 impl CloudUnit {
+    /// The chosen aparelho's id and label, so the local path can carry the same identity.
+    pub fn chosen(&self) -> Option<(String, Option<String>)> {
+        self.device.as_ref().map(|device| (device.id.clone(), device.nome.clone()))
+    }
+
     pub fn new(cloud: Cloud, device_file: PathBuf) -> Self {
         let device = fs::read(&device_file).ok().and_then(|json| serde_json::from_slice(&json).ok());
         Self { cloud, device_file, device }
@@ -339,6 +363,219 @@ impl Unit for DemoUnit {
             self.device.insert(key.clone(), value.clone());
         }
         Ok(Outcome { device: self.device.clone(), pending: vec![] })
+    }
+}
+
+/// Power on first and power off last, so climate changes reach a running unit, as the cloud path does.
+fn order(changes: &[(String, Value)]) -> Vec<(String, Value)> {
+    let mut ordered: Vec<(String, Value)> = changes.iter().filter(|(key, _)| key != "ligado").cloned().collect();
+    if let Some(power) = changes.iter().find(|(key, _)| key == "ligado") {
+        if power.1 == Value::Bool(true) {
+            ordered.insert(0, power.clone());
+        } else {
+            ordered.push(power.clone());
+        }
+    }
+    ordered
+}
+
+const LOCAL_CONFIRM: usize = 3;
+const DISCOVERY_COOLDOWN: Duration = Duration::from_secs(45);
+
+/// Controls the unit over the home network when it can, and through SmartThings otherwise. The
+/// network path is tried first on every command and refresh; any local failure falls back to the
+/// cloud, so the panel keeps working exactly as before.
+pub struct HybridUnit {
+    cloud: CloudUnit,
+    settings: PathBuf,
+    identity: Option<Identity>,
+    enabled: bool,
+    addr: Option<SocketAddr>,
+    session: Option<Link>,
+    units: Vec<Found>,
+    status: String,
+    cooldown_until: Option<Instant>,
+}
+
+impl HybridUnit {
+    pub fn new(cloud: CloudUnit, settings: PathBuf) -> Self {
+        let enabled = settings::local_enabled(&settings);
+        let addr = settings::local_addr(&settings).and_then(|text| text.parse().ok());
+        let (identity, status) = match Identity::new() {
+            Ok(identity) => (Some(identity), String::new()),
+            Err(error) => {
+                log::line(format_args!("local: sem identidade: {error}"));
+                (None, "Não deu para preparar o controle local".to_owned())
+            }
+        };
+        Self { cloud, settings, identity, enabled, addr, session: None, units: Vec::new(), status, cooldown_until: None }
+    }
+
+    fn can_do_locally(&self, changes: &[(String, Value)]) -> bool {
+        changes.iter().all(|(key, value)| localac::write_for(key, value).is_some())
+    }
+
+    /// Reuses the open session, opening one if needed. The secure port moves when the unit restarts,
+    /// so a failed open looks for the same host again before giving up.
+    fn open(&mut self) -> Result<&mut Link, String> {
+        if self.identity.is_none() {
+            return Err("sem identidade local".into());
+        }
+        let addr = self.addr.ok_or("nenhum ar escolhido na rede")?;
+        if self.session.is_none() {
+            let identity = self.identity.as_ref().unwrap();
+            match Link::open(addr, identity) {
+                Ok(link) => self.session = Some(link),
+                Err(first) => match localac::discover(identity).into_iter().find(|unit| unit.addr.ip() == addr.ip()) {
+                    Some(found) => {
+                        let link = Link::open(found.addr, identity).map_err(|_| first.clone())?;
+                        self.session = Some(link);
+                        self.addr = Some(found.addr);
+                        settings::set_local_addr(&self.settings, Some(&found.addr.to_string()));
+                    }
+                    None => return Err(first),
+                },
+            }
+        }
+        Ok(self.session.as_mut().unwrap())
+    }
+
+    fn read_local(&mut self) -> Result<Device, String> {
+        let chosen = self.cloud.chosen();
+        let link = self.open()?;
+        let mut state = localac::read(link)?;
+        if let Some((id, nome)) = chosen {
+            state.insert("id".into(), json!(id));
+            state.insert("nome".into(), json!(nome));
+        }
+        Ok(state)
+    }
+
+    fn local_run(&mut self, changes: &[(String, Value)]) -> Result<Outcome, String> {
+        let ordered = order(changes);
+        {
+            let link = self.open()?;
+            for (key, value) in &ordered {
+                let (path, body) = localac::write_for(key, value).ok_or_else(|| format!("sem caminho local para {key}"))?;
+                let response = link.post(&path, &body)?;
+                if !response.ok() {
+                    return Err(format!("o ar recusou {key}"));
+                }
+            }
+        }
+        let mut state = self.read_local()?;
+        for _ in 1..LOCAL_CONFIRM {
+            if unconfirmed(changes, &state).is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(400));
+            state = self.read_local()?;
+        }
+        let pending = unconfirmed(changes, &state);
+        Ok(Outcome { device: state, pending })
+    }
+
+    fn try_discover(&mut self) {
+        let Some(identity) = self.identity.as_ref() else {
+            return;
+        };
+        self.units = localac::discover(identity);
+        self.cooldown_until = Some(Instant::now() + DISCOVERY_COOLDOWN);
+        match self.units.len() {
+            0 => self.status = "Nenhum ar encontrado na rede".into(),
+            1 => {
+                let unit = self.units[0].clone();
+                self.addr = Some(unit.addr);
+                settings::set_local_addr(&self.settings, Some(&unit.addr.to_string()));
+                self.status = format!("Achei {} na rede", unit.name);
+            }
+            many => self.status = format!("{many} ares na rede, escolha um"),
+        }
+    }
+}
+
+impl Unit for HybridUnit {
+    fn run(&mut self, changes: &[(String, Value)]) -> Result<Outcome, Failure> {
+        if self.enabled && self.identity.is_some() && self.can_do_locally(changes) {
+            if self.addr.is_none() && self.cooldown_until.is_none_or(|at| Instant::now() >= at) {
+                self.try_discover();
+            }
+            if self.addr.is_some() {
+                match self.local_run(changes) {
+                    Ok(outcome) => {
+                        if !self.status.starts_with("Achei") {
+                            self.status = "Controlando pela rede".into();
+                        }
+                        return Ok(outcome);
+                    }
+                    Err(error) => {
+                        log::line(format_args!("local: {error}"));
+                        self.session = None;
+                        self.status = "Rede falhou agora, usando o SmartThings".into();
+                    }
+                }
+            }
+        }
+        self.cloud.run(changes)
+    }
+
+    fn login(&mut self) -> Result<(), Failure> {
+        self.cloud.login()
+    }
+
+    fn login_control(&self) -> Option<Arc<LoginControl>> {
+        self.cloud.login_control()
+    }
+
+    fn choose(&mut self, id: &str, name: Option<&str>) {
+        self.cloud.choose(id, name);
+    }
+
+    fn forget_device(&mut self) {
+        self.cloud.forget_device();
+    }
+
+    fn logout(&mut self) {
+        self.cloud.logout();
+    }
+
+    fn set_local(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        settings::set_local_enabled(&self.settings, enabled);
+        if !enabled {
+            self.session = None;
+            self.status = String::new();
+        } else if self.addr.is_none() {
+            self.try_discover();
+        }
+    }
+
+    fn find_local(&mut self) {
+        self.cooldown_until = None;
+        self.try_discover();
+    }
+
+    fn choose_local(&mut self, addr: &str) {
+        match addr.parse::<SocketAddr>() {
+            Ok(parsed) => {
+                self.addr = Some(parsed);
+                settings::set_local_addr(&self.settings, Some(addr));
+                self.session = None;
+                self.status = "Ar escolhido na rede".into();
+            }
+            Err(_) => self.status = "Endereço inválido".into(),
+        }
+    }
+
+    fn local_view(&self) -> Value {
+        let units: Vec<Value> =
+            self.units.iter().map(|unit| json!({ "addr": unit.addr.to_string(), "nome": unit.name, "modelo": unit.model })).collect();
+        json!({
+            "enabled": self.enabled,
+            "addr": self.addr.map(|addr| addr.to_string()),
+            "units": units,
+            "status": self.status,
+        })
     }
 }
 

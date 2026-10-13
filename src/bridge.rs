@@ -62,9 +62,16 @@ enum AccountJob {
     Logout,
 }
 
+enum LocalJob {
+    SetEnabled(bool),
+    Find,
+    Choose(String),
+}
+
 enum Job {
     Run(Changes),
     Account(AccountJob),
+    Local(LocalJob),
 }
 
 struct State {
@@ -78,6 +85,8 @@ struct State {
     devices: Vec<Value>,
     login_error: bool,
     account_job: Option<AccountJob>,
+    local_job: Option<LocalJob>,
+    local: Value,
     flush_at: Option<Instant>,
     refresh_wanted: bool,
     next_poll: Instant,
@@ -130,6 +139,7 @@ impl State {
             "account": self.account.name(),
             "devices": self.devices,
             "loginError": self.login_error,
+            "local": self.local,
         })
     }
 
@@ -209,6 +219,8 @@ impl Bridge {
                 devices: Vec::new(),
                 login_error: false,
                 account_job: None,
+                local_job: None,
+                local: Value::Null,
                 flush_at: None,
                 refresh_wanted: true,
                 next_poll: Instant::now(),
@@ -320,6 +332,25 @@ impl Bridge {
         self.account_job(AccountJob::Logout, Account::SignedOut);
     }
 
+    fn local_job(&self, job: LocalJob) {
+        self.update(|state| state.local_job = Some(job));
+    }
+
+    /// Turns the home-network path on or off.
+    pub fn set_local(&self, enabled: bool) {
+        self.local_job(LocalJob::SetEnabled(enabled));
+    }
+
+    /// Looks for air conditioners on the network.
+    pub fn find_local(&self) {
+        self.local_job(LocalJob::Find);
+    }
+
+    /// Picks the unit at this address for the network path.
+    pub fn choose_local(&self, addr: &str) {
+        self.local_job(LocalJob::Choose(addr.to_owned()));
+    }
+
     fn next_job(&self) -> Job {
         let mut state = self.lock();
         loop {
@@ -327,6 +358,10 @@ impl Bridge {
             if let Some(job) = state.account_job.take() {
                 state.run = Run::Account;
                 return Job::Account(job);
+            }
+            if let Some(job) = state.local_job.take() {
+                state.run = Run::Account;
+                return Job::Local(job);
             }
             if state.account.connected() && state.flush_at.is_some_and(|at| at <= now) {
                 state.flush_at = None;
@@ -381,9 +416,25 @@ impl Bridge {
                     if let Err(failure) = &result {
                         log::line(format_args!("atualização: {failure:?}"));
                     }
+                    let local = unit.local_view();
                     self.update(|state| {
                         state.run = Run::Idle;
+                        state.local = local;
                         state.finish_run(result);
+                    });
+                }
+                Job::Local(job) => {
+                    match &job {
+                        LocalJob::SetEnabled(enabled) => unit.set_local(*enabled),
+                        LocalJob::Find => unit.find_local(),
+                        LocalJob::Choose(addr) => unit.choose_local(addr),
+                    }
+                    let local = unit.local_view();
+                    self.update(|state| {
+                        state.run = Run::Idle;
+                        state.local = local;
+                        // Pull fresh state through the path the user just changed.
+                        state.refresh_wanted = true;
                     });
                 }
                 Job::Account(AccountJob::Login) => {

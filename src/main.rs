@@ -2,8 +2,11 @@
 
 mod ac;
 mod bridge;
+mod cbor;
 mod gfx;
 mod icons;
+mod local;
+mod localac;
 mod log;
 mod panel;
 mod platform;
@@ -21,7 +24,7 @@ use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId, PostMessageW};
 
-use crate::ac::{CloudUnit, DemoUnit, Unit};
+use crate::ac::{CloudUnit, DemoUnit, HybridUnit, Unit};
 use crate::bridge::Bridge;
 use crate::smartthings::Cloud;
 
@@ -61,7 +64,8 @@ fn main() {
     let unit: Box<dyn Unit> = if demo {
         Box::new(DemoUnit::new())
     } else {
-        Box::new(CloudUnit::new(Cloud::new(dir.join("sessao.bin")), dir.join("device.json")))
+        let cloud = CloudUnit::new(Cloud::new(dir.join("sessao.bin")), dir.join("device.json"));
+        Box::new(HybridUnit::new(cloud, settings_file.clone()))
     };
     shell::run(|publish| Bridge::start(unit, publish), settings_file, demo, !at_startup);
 }

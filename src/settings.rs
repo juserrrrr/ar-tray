@@ -32,6 +32,38 @@ pub fn set_autostart(file: &Path, enabled: bool, demo: bool) {
     }
 }
 
+/// Whether to control the unit over the home network first, with SmartThings as the fallback.
+pub fn local_enabled(file: &Path) -> bool {
+    read(file)["local"]["ligado"].as_bool().unwrap_or(false)
+}
+
+pub fn set_local_enabled(file: &Path, enabled: bool) {
+    let mut settings = read(file);
+    if !settings["local"].is_object() {
+        settings["local"] = json!({});
+    }
+    settings["local"]["ligado"] = json!(enabled);
+    if let Err(error) = fs::write(file, settings.to_string()) {
+        eprintln!("não deu para salvar o controle local: {error}");
+    }
+}
+
+/// The unit's address on the network, as "host:porta", once one was found and chosen.
+pub fn local_addr(file: &Path) -> Option<String> {
+    read(file)["local"]["endereco"].as_str().map(str::to_owned)
+}
+
+pub fn set_local_addr(file: &Path, addr: Option<&str>) {
+    let mut settings = read(file);
+    if !settings["local"].is_object() {
+        settings["local"] = json!({});
+    }
+    settings["local"]["endereco"] = addr.map_or(Value::Null, |text| json!(text));
+    if let Err(error) = fs::write(file, settings.to_string()) {
+        eprintln!("não deu para salvar o endereço do ar: {error}");
+    }
+}
+
 /// A typical Brazilian residential price with taxes, until the user sets theirs.
 const DEFAULT_TARIFF: f64 = 0.90;
 
