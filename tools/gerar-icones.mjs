@@ -63,7 +63,8 @@ const entries = NAMES.map((name) => {
   return `    ("${name}", &[${paths.join(', ')}]),`;
 });
 
-const source = `// Gerado por tools/gerar-icones.mjs a partir do Lucide ${version} (ISC, https://lucide.dev).
+const source = `// Gerado por tools/gerar-icones.mjs a partir do Lucide ${version} (https://lucide.dev).
+// Licença ISC, com o aviso completo em LICENSES/lucide.txt.
 // Cada ícone é desenhado num quadro de 24 por 24 com traço arredondado.
 
 pub const ICONS: &[(&str, &[&str])] = &[

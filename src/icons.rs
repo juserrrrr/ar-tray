@@ -1,4 +1,5 @@
-// Gerado por tools/gerar-icones.mjs a partir do Lucide 1.55.0 (ISC, https://lucide.dev).
+// Gerado por tools/gerar-icones.mjs a partir do Lucide 1.55.0 (https://lucide.dev).
+// Licença ISC, com o aviso completo em LICENSES/lucide.txt.
 // Cada ícone é desenhado num quadro de 24 por 24 com traço arredondado.
 
 pub const ICONS: &[(&str, &[&str])] = &[

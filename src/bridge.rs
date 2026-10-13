@@ -101,7 +101,7 @@ impl State {
         if self.visible { POLL_VISIBLE } else { POLL_HIDDEN }
     }
 
-    /// The unit ignores climate changes while it is off, so those wait for a power-on.
+    /// Setpoint, mode, fan and direction only take effect on a running unit, so they wait for power.
     fn sendable(&self) -> Changes {
         let power = self.pending.iter().find(|(key, _)| key == "ligado").map(|(_, value)| value);
         let will_be_on = match power {

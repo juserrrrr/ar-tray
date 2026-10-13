@@ -1,6 +1,6 @@
 [package]
 name = "ar-tray"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.90"
 description = "Painel na bandeja do Windows para controlar um ar-condicionado Samsung pelo SmartThings"

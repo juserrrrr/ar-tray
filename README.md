@@ -10,7 +10,7 @@ O ícone na bandeja mostra a temperatura do ambiente, com uma barrinha na cor do
 
 ## Baixar
 
-O exe pronto fica nas [releases](https://github.com/juserrrrr/windfree-panel/releases/latest). Baixe, abra e entre com a conta Samsung. Ele não é assinado, então o Windows pode mostrar "O Windows protegeu o computador": clique em **Mais informações** e **Executar assim mesmo**.
+O exe pronto fica nas [releases](https://github.com/juserrrrr/ar-tray/releases/latest). Baixe, abra e entre com a conta Samsung. Ele não é assinado, então o Windows pode mostrar "O Windows protegeu o computador": clique em **Mais informações** e **Executar assim mesmo**.
 
 ## Por que é leve
 
@@ -95,16 +95,20 @@ Tudo fica em `%APPDATA%\dev.ar-tray.desktop`:
 
 ## Problemas comuns
 
-- **"Sem resposta do SmartThings"**: confira no app SmartThings se o ar está online e clique em "Tentar de novo".
-- **A tela de conexão voltou**: o login expirou depois de 30 dias sem uso. Entre de novo pelo botão.
-- **"Nenhum ar-condicionado"**: o login precisa ser na mesma conta em que o ar aparece no app SmartThings.
-- **"O ar não confirmou…"**: alguns modos não aceitam todos os ajustes. O painel volta para o estado real do aparelho.
-- **Algo estranho aconteceu**: veja o `log.txt` na pasta de dados.
+- **"O SmartThings não respondeu"**: veja se o aparelho aparece online no app SmartThings e use "Tentar outra vez" no rodapé do painel.
+- **Voltou a tela de conexão**: o acesso venceu depois de 30 dias parado. É só entrar de novo.
+- **"Nenhum ar-condicionado"**: entre com a mesma conta Samsung em que o aparelho está cadastrado.
+- **"O ar recusou…"**: o aparelho não aceita aquele ajuste no modo atual, e o painel mostra de novo o que ele está usando.
+- **Comportamento estranho**: o `log.txt` na pasta de dados registra os passos do login e as falhas.
 
 ## Desinstalar
 
-Desmarque "Abrir com o Windows" no menu do ícone, clique em **Sair** e apague o exe e a pasta `%APPDATA%\dev.ar-tray.desktop`.
+No menu do ícone, desmarque "Iniciar com o Windows" e escolha **Sair**. Depois apague o exe e a pasta `%APPDATA%\dev.ar-tray.desktop`.
 
 ## Créditos
 
-Ícones do [Lucide](https://lucide.dev) (ISC). Samsung, WindFree e SmartThings são marcas da Samsung; este projeto não tem ligação com a empresa.
+A ideia de um painel na bandeja para esses aparelhos e parte da lógica de comandos vieram do projeto [samsung-windfree-tray-app](https://github.com/c0dag/samsung-windfree-tray-app), de @c0dag.
+
+Ícones do [Lucide](https://lucide.dev), sob a licença ISC, com o texto completo em [LICENSES/lucide.txt](LICENSES/lucide.txt).
+
+Samsung, WindFree e SmartThings são marcas da Samsung. Este projeto é independente e não tem ligação com a empresa.

@@ -122,8 +122,8 @@ fn plain(capability: &'static str, command: &'static str, arguments: Vec<Value>)
 fn command_for(key: &str, value: &Value) -> Option<Command> {
     match (key, value) {
         ("ligado", Value::Bool(on)) => Some(plain("switch", if *on { "on" } else { "off" }, vec![])),
-        // The unit lists samsungce.airConditionerLighting as disabled and ignores it. Samsung's OCF
-        // option works but is inverted: Light_On turns the display off.
+        // samsungce.airConditionerLighting only reports the display here; setting it goes through the
+        // OCF execute call, whose option names are reversed (Light_Off lights the display).
         ("display", Value::String(state)) if state == "on" || state == "off" => {
             let option = if state == "on" { "Light_Off" } else { "Light_On" };
             Some(plain("execute", "execute", vec![json!("mode/vs/0"), json!({ "x.com.samsung.da.options": [option] })]))
@@ -142,7 +142,7 @@ fn command_for(key: &str, value: &Value) -> Option<Command> {
     }
 }
 
-/// Power on goes first and power off last, because the unit ignores climate changes while off.
+/// Power on goes first and power off last, so climate settings reach a running unit.
 fn ordered_commands(changes: &[(String, Value)]) -> Result<Vec<Command>, String> {
     let mut ordered: Vec<&(String, Value)> = changes.iter().filter(|(key, _)| key != "ligado").collect();
     if let Some(power) = changes.iter().find(|(key, _)| key == "ligado") {

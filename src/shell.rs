@@ -610,11 +610,11 @@ fn show_tray_menu(x: i32, y: i32) {
     let command = unsafe {
         let menu = CreatePopupMenu();
         let item = |flags, id, text: &str| AppendMenuW(menu, flags, id, wide(text).as_ptr());
-        item(MF_STRING, MENU_OPEN, if signed_out { "Conectar conta Samsung" } else { "Abrir painel" });
+        item(MF_STRING, MENU_OPEN, if signed_out { "Conectar conta Samsung" } else { "Mostrar o painel" });
         item(MF_STRING | if has_device { 0 } else { MF_GRAYED }, MENU_POWER, if on { "Desligar" } else { "Ligar" });
-        item(MF_STRING, MENU_REFRESH, "Atualizar agora");
+        item(MF_STRING, MENU_REFRESH, "Buscar estado agora");
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        item(MF_STRING | if autostart { MF_CHECKED } else { 0 }, MENU_AUTOSTART, "Abrir com o Windows");
+        item(MF_STRING | if autostart { MF_CHECKED } else { 0 }, MENU_AUTOSTART, "Iniciar com o Windows");
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         item(MF_STRING, MENU_QUIT, "Sair");
         SetForegroundWindow(host);

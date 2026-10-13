@@ -122,8 +122,8 @@ pub fn tooltip_for(view: &Value) -> String {
         return APP_NAME.into();
     }
     let name = device["nome"].as_str().unwrap_or("Ar-condicionado");
-    let power = if device["ligado"] == true { format!("ligado em {} °C", shown(&device["temp"])) } else { "desligado".into() };
-    format!("{name} {power}\nAmbiente com {} °C e {}% de umidade", shown(&device["ambiente"]), shown(&device["umidade"]))
+    let power = if device["ligado"] == true { format!("ligado, {} °C", shown(&device["temp"])) } else { "desligado".into() };
+    format!("{name}: {power}\nSala: {} °C, umidade {}%", shown(&device["ambiente"]), shown(&device["umidade"]))
 }
 
 #[cfg(test)]
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn tooltip_shows_dashes_for_missing_readings() {
         let view = json!({ "account": "ready", "device": { "nome": "Ar da sala", "ligado": true, "temp": 23, "ambiente": 27 } });
-        assert_eq!(tooltip_for(&view), "Ar da sala ligado em 23 °C\nAmbiente com 27 °C e -% de umidade");
+        assert_eq!(tooltip_for(&view), "Ar da sala: ligado, 23 °C\nSala: 27 °C, umidade -%");
         assert_eq!(tooltip_for(&Value::Null), APP_NAME);
         assert_eq!(tooltip_for(&json!({ "account": "signedOut" })), "Painel do Ar\nConecte sua conta Samsung");
     }

@@ -7,7 +7,7 @@ $cargo = Join-Path $cargoHome 'bin\cargo.exe'
 if (-not (Test-Path $cargo)) { $cargo = 'cargo' }
 
 # As mensagens de erro do Rust guardam o caminho dos arquivos de código; aqui eles viram nomes genéricos.
-$env:RUSTFLAGS = "--remap-path-prefix=$cargoHome=/cargo --remap-path-prefix=$root=/windfree-panel -C link-arg=/PDBALTPATH:%_PDB%"
+$env:RUSTFLAGS = "--remap-path-prefix=$cargoHome=/cargo --remap-path-prefix=$root=/ar-tray -C link-arg=/PDBALTPATH:%_PDB%"
 $env:CARGO_TARGET_DIR = Join-Path $root 'target\dist'
 # Cargo writes progress to stderr, which PowerShell 5 would treat as an error under 'Stop'.
 $ErrorActionPreference = 'Continue'

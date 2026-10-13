@@ -141,13 +141,13 @@ const SWING_CHOICES: [Choice; 4] = [
     choice("fixed", "Fixa", "Fixa", "minus"),
     choice("vertical", "Vertical", "Vertical", "move-vertical"),
     choice("horizontal", "Lateral", "Lateral", "move-horizontal"),
-    choice("all", "Vertical e lateral", "Ambas", "move"),
+    choice("all", "Em todas as direções", "Todas", "move"),
 ];
 
 const SETTING_ROWS: [(&str, &str, &str, Option<&str>); 3] = [
-    ("display", "sun", "Luz do display", None),
-    ("bipe", "volume-2", "Bipe", Some("Apita quando recebe um comando")),
-    ("autoclean", "wind", "Secagem automática", Some("Seca o aparelho por dentro ao desligar")),
+    ("display", "sun", "Display aceso", None),
+    ("bipe", "volume-2", "Bipe", Some("Som de confirmação a cada comando")),
+    ("autoclean", "wind", "Limpeza automática", Some("Seca a parte interna depois de desligar")),
 ];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -336,15 +336,15 @@ fn join_names(names: &[&str]) -> String {
 
 fn unconfirmed_name(key: &str) -> &str {
     match key {
-        "ligado" => "o liga e desliga",
-        "temp" => "a temperatura",
-        "modo" => "o modo",
-        "vento" => "o vento",
-        "extra" => "o WindFree, o sono ou o turbo",
-        "oscilar" => "a direção",
-        "display" => "a luz do display",
-        "bipe" => "o bipe",
-        "autoclean" => "a secagem automática",
+        "ligado" => "ligar ou desligar",
+        "temp" => "temperatura",
+        "modo" => "modo",
+        "vento" => "vento",
+        "extra" => "modo especial",
+        "oscilar" => "direção",
+        "display" => "display",
+        "bipe" => "bipe",
+        "autoclean" => "limpeza automática",
         other => other,
     }
 }
@@ -678,21 +678,21 @@ impl Panel {
     fn status(&self) -> Status {
         let status = |tone, icon, text: &str, retry| Status { tone, icon, text: text.to_owned(), retry };
         match self.view["error"]["kind"].as_str() {
-            Some("failed") => return status(Tone::Error, "cloud-off", "Sem resposta do SmartThings", true),
+            Some("failed") => return status(Tone::Error, "cloud-off", "O SmartThings não respondeu", true),
             Some("unconfirmed") => {
                 let keys: Vec<&str> = self.view["error"]["keys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(unconfirmed_name).collect();
-                return status(Tone::Error, "triangle-alert", &format!("O ar não confirmou {}", join_names(&keys)), false);
+                return status(Tone::Error, "triangle-alert", &format!("O ar recusou: {}", join_names(&keys)), false);
             }
             _ => {}
         }
         if self.device().is_none() {
-            return status(Tone::Busy, "loader-circle", "Conectando ao SmartThings…", false);
+            return status(Tone::Busy, "loader-circle", "Buscando o ar no SmartThings…", false);
         }
         if self.view["syncing"] == true {
-            return status(Tone::Busy, "loader-circle", "Sincronizando…", false);
+            return status(Tone::Busy, "loader-circle", "Enviando ao ar…", false);
         }
         if self.view["held"].as_array().is_some_and(|held| !held.is_empty()) {
-            return status(Tone::Quiet, "clock", "Aplica quando ligar", false);
+            return status(Tone::Quiet, "clock", "Vale quando o ar ligar", false);
         }
         if self.turbo() {
             return status(Tone::Quiet, "rocket", "Turbo ligado: temperatura e vento fixos", false);
@@ -706,7 +706,7 @@ impl Panel {
     /// Where the status text ends and the retry link sits.
     fn status_layout(&self, status: &Status) -> (String, Option<(f32, f32)>) {
         let fonts = fonts();
-        let retry_width = if status.retry { fonts.measure("Tentar de novo", Style::Medium, 13.0) + 12.0 } else { 0.0 };
+        let retry_width = if status.retry { fonts.measure("Tentar outra vez", Style::Medium, 13.0) + 12.0 } else { 0.0 };
         let text = fonts.fit(&status.text, Style::Regular, 13.0, 270.0 - retry_width);
         let retry = status.retry.then(|| {
             let start = 42.0 + fonts.measure(&text, Style::Regular, 13.0) + 12.0;
@@ -1298,7 +1298,7 @@ impl Panel {
         }
         canvas.text(&text, Style::Regular, 13.0, 42.0, STATUS_Y + 4.5, color, Align::Left);
         if let Some((start, end)) = retry {
-            canvas.text("Tentar de novo", Style::Medium, 13.0, start, STATUS_Y + 4.5, p.text, Align::Left);
+            canvas.text("Tentar outra vez", Style::Medium, 13.0, start, STATUS_Y + 4.5, p.text, Align::Left);
             canvas.fill(&rounded(start, STATUS_Y + 7.5, end - start, 1.0, 0.5), &solid(p.text.alpha(if self.hovered(Hit::Retry) { 0.9 } else { 0.5 })));
         }
         let (cx, cy) = SETTINGS_BUTTON;
@@ -1402,9 +1402,9 @@ impl Panel {
         let usage = self.field("filtroUso").as_f64();
         let filter_status = self.field("filtroStatus").as_str();
         let note = match (filter_status, usage, self.field("filtroAlerta").as_f64()) {
-            (Some("wash"), ..) => "Hora de lavar".to_owned(),
-            (Some("replace"), ..) => "Hora de trocar".to_owned(),
-            (_, Some(usage), Some(alert)) => format!("Lavar daqui a {} h de uso", (((100.0 - usage) / 100.0) * alert).max(0.0).round()),
+            (Some("wash"), ..) => "Filtro pede limpeza".to_owned(),
+            (Some("replace"), ..) => "Filtro pede troca".to_owned(),
+            (_, Some(usage), Some(alert)) => format!("Limpeza em {} h de uso", (((100.0 - usage) / 100.0) * alert).max(0.0).round()),
             _ => "-".to_owned(),
         };
         canvas.text(&note, Style::Regular, 12.0, x + 46.0, cy + 9.0, p.muted, Align::Left);
@@ -1440,7 +1440,7 @@ impl Panel {
             hover_row(canvas, rect);
         }
         canvas.icon("monitor", x + 24.0, cy, 18.0, p.muted);
-        canvas.text("Abrir com o Windows", Style::Regular, 14.0, x + 46.0, cy + 5.0, p.text, Align::Left);
+        canvas.text("Iniciar com o Windows", Style::Regular, 14.0, x + 46.0, cy + 5.0, p.text, Align::Left);
         self.draw_switch(canvas, x + width - 54.0, cy, self.autostart, true);
 
         if demo {
