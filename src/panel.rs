@@ -218,6 +218,7 @@ enum Hit {
     OpenEnergy,
     OpenNetwork,
     ConnectCloud,
+    KeepDisplayOff,
     LocalToggle,
     LocalFind,
     LocalUnit(usize),
@@ -239,6 +240,8 @@ pub enum Action {
     Refresh,
     Hide,
     Autostart(bool),
+    /// Put the display out each time the unit starts.
+    KeepDisplayOff(bool),
     Tariff(f64),
     /// This month's kWh as the SmartThings app shows it.
     MonthUsed(f64),
@@ -424,16 +427,22 @@ fn epoch_seconds(iso: &str) -> Option<i64> {
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
+/// Settings rows are a little shorter than elsewhere, so every group fits on the page.
+const SETTINGS_ROW: f32 = 52.0;
+
 fn settings_row(index: usize) -> (f32, f32, f32, f32) {
-    // Three switches, then filter and energy, then autostart and the network entry, then the account.
-    let y = match index {
-        0..=2 => 68.0 + index as f32 * ROW_HEIGHT,
-        3 | 4 => 246.0 + (index - 3) as f32 * ROW_HEIGHT,
-        5 => 362.0,
-        8 => 416.0,
-        _ => 486.0 + (index - 6) as f32 * ROW_HEIGHT,
+    // Display, keep it off, beep and auto clean; filter and energy; autostart and the network entry;
+    // the account.
+    let (group_y, position) = match index {
+        0 => (62.0, 0),
+        9 => (62.0, 1),
+        1 | 2 => (62.0, index + 1),
+        3 | 4 => (278.0, index - 3),
+        5 => (390.0, 0),
+        8 => (390.0, 1),
+        _ => (502.0, index - 6),
     };
-    (14.0, y, 344.0, ROW_HEIGHT)
+    (14.0, group_y + position as f32 * SETTINGS_ROW, 344.0, SETTINGS_ROW)
 }
 
 fn device_row(index: usize) -> (f32, f32, f32, f32) {
@@ -447,6 +456,7 @@ fn network_unit_row(index: usize) -> (f32, f32, f32, f32) {
 pub struct Panel {
     view: Value,
     autostart: bool,
+    keep_display_off: bool,
     palette: Palette,
     hover: Option<Hit>,
     pressed: Option<Hit>,
@@ -484,6 +494,7 @@ impl Panel {
         Self {
             view: Value::Null,
             autostart: false,
+            keep_display_off: false,
             palette: DARK,
             hover: None,
             pressed: None,
@@ -526,6 +537,11 @@ impl Panel {
             self.energy = false;
             self.network = false;
         }
+        self.dirty = true;
+    }
+
+    pub fn set_keep_display_off(&mut self, enabled: bool) {
+        self.keep_display_off = enabled;
         self.dirty = true;
     }
 
@@ -806,6 +822,9 @@ impl Panel {
         if let Some(index) = [0, 1, 2, 5].into_iter().position(|row| inside(x, y, settings_row(row))) {
             return Some(Hit::Toggle(index));
         }
+        if inside(x, y, settings_row(9)) {
+            return Some(Hit::KeepDisplayOff);
+        }
         if inside(x, y, settings_row(4)) {
             return Some(Hit::OpenEnergy);
         }
@@ -1037,6 +1056,10 @@ impl Panel {
                 Action::Tariff(self.tariff)
             }
             Hit::Retry => Action::Refresh,
+            Hit::KeepDisplayOff => {
+                self.keep_display_off = !self.keep_display_off;
+                Action::KeepDisplayOff(self.keep_display_off)
+            }
             Hit::Toggle(3) => {
                 self.autostart = !self.autostart;
                 Action::Autostart(self.autostart)
@@ -1459,15 +1482,14 @@ impl Panel {
         let demo = self.account() == "demo";
         let group = |canvas: &mut Canvas, first: usize, rows: usize| {
             let (x, y, width, _) = settings_row(first);
-            canvas.card(x, y, width, ROW_HEIGHT * rows as f32, 16.0, p.card, p.line);
+            canvas.card(x, y, width, SETTINGS_ROW * rows as f32, 16.0, p.card, p.line);
             for row in 1..rows {
-                canvas.fill(&rounded(x + 14.0, y + ROW_HEIGHT * row as f32, width - 28.0, 1.0, 0.5), &solid(p.line));
+                canvas.fill(&rounded(x + 14.0, y + SETTINGS_ROW * row as f32, width - 28.0, 1.0, 0.5), &solid(p.line));
             }
         };
-        group(canvas, 0, 3);
+        group(canvas, 0, 4);
         group(canvas, 3, 2);
-        group(canvas, 5, 1);
-        group(canvas, 8, 1);
+        group(canvas, 5, 2);
         if !demo {
             group(canvas, 6, if self.cloud_connected() { 2 } else { 1 });
         }
@@ -1492,6 +1514,17 @@ impl Panel {
             }
             self.draw_switch(canvas, x + width - 54.0, cy, self.field(key) == "on", has_device);
         }
+
+        // The unit lights its display again each time it starts; this puts it out on its own.
+        let rect @ (x, y, width, height) = settings_row(9);
+        let cy = y + height / 2.0;
+        if self.hovered(Hit::KeepDisplayOff) {
+            hover_row(canvas, rect);
+        }
+        canvas.icon("moon", x + 24.0, cy, 18.0, p.muted);
+        canvas.text("Manter display apagado", Style::Regular, 14.0, x + 46.0, cy - 2.0, p.text, Align::Left);
+        canvas.text("Apaga de novo sempre que o ar liga", Style::Regular, 12.0, x + 46.0, cy + 14.0, p.muted, Align::Left);
+        self.draw_switch(canvas, x + width - 54.0, cy, self.keep_display_off, true);
 
         // Filter wear and energy use.
         let (x, y, width, height) = settings_row(3);

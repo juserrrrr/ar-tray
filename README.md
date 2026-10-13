@@ -58,7 +58,8 @@ Para gerar o exe de uma release sem caminhos da máquina dentro dele, rode `powe
 - **Modo**: um toque na fileira de modos. Aparecem só os modos que o aparelho aceita.
 - **Vento e Direção**: abrem uma lista com as opções do aparelho.
 - **WindFree, Sono e Turbo**: ligam e desligam direto. O Turbo é o resfriamento rápido da Samsung: roda por um tempo e volta sozinho para o ajuste anterior, sem mudar temperatura nem vento. Enquanto ele roda, o aparelho trava a temperatura e o vento, e o painel deixa esses controles apagados. Os três ficam apagados nos aparelhos que não têm.
-- **Ajustes** (canto de baixo): luz do display, bipe, secagem automática, filtro, consumo, abrir com o Windows, controle local, trocar de aparelho e sair da conta Samsung.
+- **Ajustes** (canto de baixo): luz do display, manter o display apagado, bipe, secagem automática, filtro, consumo, abrir com o Windows, controle local, trocar de aparelho e sair da conta Samsung.
+- **Manter display apagado**: o ar acende a luz do display de novo toda vez que liga, porque não guarda esse ajuste (o do bipe ele guarda). Com essa opção, o app apaga a luz sozinho uns 2 segundos depois que o ar liga, seja pelo app ou pelo controle remoto. Com o painel fechado, o app confere o ar a cada 20 segundos em vez de 60, para perceber logo quando ele foi ligado pelo controle.
 
 ## Controle local pela rede
 

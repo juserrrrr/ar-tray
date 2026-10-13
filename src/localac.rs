@@ -471,6 +471,50 @@ mod tests {
         }
     }
 
+    // Power the unit on, put the display out 2 s later, watch it stay out, power off again.
+    // cargo test local_display_cycle -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn local_display_cycle() {
+        let addr: SocketAddr = std::env::var("AR_TRAY_LOCAL").expect("defina AR_TRAY_LOCAL=host:porta").parse().unwrap();
+        let identity = Identity::new().unwrap();
+        let mut link = Link::open(addr, &identity).unwrap();
+        let began = std::time::Instant::now();
+        let show = |link: &mut Link, moment: &str| {
+            let mode = link.get("/mode/vs/0").unwrap().body;
+            let token: Vec<String> = mode["x.com.samsung.da.options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|option| option.starts_with("Light_"))
+                .map(str::to_owned)
+                .collect();
+            let device = read(link).unwrap();
+            println!("{:>5} ms {moment}: ligado={} display={} ({token:?})", began.elapsed().as_millis(), device["ligado"], device["display"]);
+        };
+        show(&mut link, "antes");
+        let was_on = read(&mut link).unwrap()["ligado"] == json!(true);
+        if !was_on {
+            let (path, body) = write_for("ligado", &json!(true)).unwrap();
+            assert!(link.post(&path, &body).unwrap().ok());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        show(&mut link, "ligado há 2 s");
+        let (path, body) = write_for("display", &json!("off")).unwrap();
+        assert!(link.post(&path, &body).unwrap().ok());
+        for wait in [1, 4, 5, 5] {
+            std::thread::sleep(std::time::Duration::from_secs(wait));
+            show(&mut link, "depois de apagar");
+        }
+        if !was_on {
+            let (path, body) = write_for("ligado", &json!(false)).unwrap();
+            assert!(link.post(&path, &body).unwrap().ok());
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            show(&mut link, "desligado de novo");
+        }
+    }
+
     fn before_temp(link: &mut Link) -> i64 {
         read(link).unwrap()["temp"].as_i64().unwrap_or(23)
     }

@@ -351,6 +351,7 @@ impl App {
         self.ui.set_scale(scale);
         self.ui.set_light(platform::apps_use_light_theme());
         self.ui.set_autostart(settings::autostart_enabled(&self.settings_file));
+        self.ui.set_keep_display_off(settings::keep_display_off(&self.settings_file));
         let (width, height) = self.ui.pixel_size();
         let (width, height) = (width as i32, height as i32);
         let margin = (MARGIN * scale).round() as i32;
@@ -400,6 +401,10 @@ impl App {
                 Action::Hide => self.hide(),
                 Action::Autostart(enabled) => settings::set_autostart(&self.settings_file, enabled, self.demo),
                 Action::Tariff(price) => settings::set_tariff(&self.settings_file, price),
+                Action::KeepDisplayOff(enabled) => {
+                    settings::set_keep_display_off(&self.settings_file, enabled);
+                    self.bridge.set_keep_display_off(enabled);
+                }
                 Action::MonthUsed(kwh) => {
                     let device = &self.view["device"];
                     if let (Some(id), Some(total)) = (device["id"].as_str(), device["energia"].as_f64()) {
@@ -667,8 +672,10 @@ pub fn run(start_bridge: impl FnOnce(Box<dyn Fn(&Value) + Send + Sync>) -> Arc<B
         unsafe { PostMessageW(host_address as HWND, WM_APP_STATE, 0, 0) };
     }));
 
+    bridge.set_keep_display_off(settings::keep_display_off(&settings_file));
     let mut ui = Panel::new();
     ui.set_autostart(settings::autostart_enabled(&settings_file));
+    ui.set_keep_display_off(settings::keep_display_off(&settings_file));
     let mut app = App {
         host,
         panel,

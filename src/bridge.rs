@@ -16,6 +16,11 @@ use crate::smartthings::LoginControl;
 const FLUSH_DELAY: Duration = Duration::ZERO;
 const POLL_VISIBLE: Duration = Duration::from_secs(15);
 const POLL_HIDDEN: Duration = Duration::from_secs(60);
+/// With the display kept off, the closed panel checks more often, so a unit started from the remote
+/// goes dark soon.
+const POLL_HIDDEN_DISPLAY: Duration = Duration::from_secs(20);
+/// How long a unit that just started gets before its display is put out again.
+const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 const STALE_AFTER: Duration = Duration::from_secs(5);
 const CLIMATE_KEYS: [&str; 5] = ["temp", "modo", "vento", "extra", "oscilar"];
 const SETTABLE_KEYS: [&str; 9] = ["ligado", "temp", "modo", "vento", "extra", "oscilar", "display", "bipe", "autoclean"];
@@ -95,6 +100,8 @@ struct State {
     next_poll: Instant,
     visible: bool,
     demo: bool,
+    /// Put the display out each time the unit starts.
+    keep_display_off: bool,
 }
 
 fn put(changes: &mut Changes, key: &str, value: Value) {
@@ -110,7 +117,11 @@ fn has(changes: &Changes, key: &str) -> bool {
 
 impl State {
     fn poll_interval(&self) -> Duration {
-        if self.visible { POLL_VISIBLE } else { POLL_HIDDEN }
+        match (self.visible, self.keep_display_off) {
+            (true, _) => POLL_VISIBLE,
+            (false, true) => POLL_HIDDEN_DISPLAY,
+            (false, false) => POLL_HIDDEN,
+        }
     }
 
     /// Setpoint, mode, fan and direction only take effect on a running unit, so they wait for power.
@@ -162,8 +173,19 @@ impl State {
         // without blocking the click, instead of waiting out the whole poll interval.
         let was_command = !self.inflight.is_empty();
         self.inflight.clear();
+        let mut display_off_at = None;
         match result {
             Ok(outcome) => {
+                // The unit lights its display again each time it starts, so put it out when asked to:
+                // a moment after a start, or right away on the first reading if it is lit.
+                let was_on = self.confirmed.as_ref().map(|device| device["ligado"] == true);
+                if self.keep_display_off && outcome.device["ligado"] == true {
+                    display_off_at = match was_on {
+                        Some(false) => Some(now + DISPLAY_SETTLE),
+                        None if outcome.device["display"] == "on" => Some(now),
+                        _ => None,
+                    };
+                }
                 let millis = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64);
                 self.confirmed = Some(outcome.device);
                 self.updated_at = Some((millis, now));
@@ -196,6 +218,10 @@ impl State {
         }
         if self.account.connected() && !self.sendable().is_empty() {
             self.flush_at = Some(now + FLUSH_DELAY);
+        }
+        if let Some(at) = display_off_at {
+            put(&mut self.pending, "display", json!("off"));
+            self.flush_at = Some(at);
         }
         let reconcile = Duration::from_millis(1500);
         self.next_poll = now + if was_command && self.account.connected() { reconcile.min(self.poll_interval()) } else { self.poll_interval() };
@@ -237,6 +263,7 @@ impl Bridge {
                 next_poll: Instant::now(),
                 visible: false,
                 demo: unit.is_demo(),
+                keep_display_off: false,
             }),
             wake: Condvar::new(),
             publish,
@@ -283,6 +310,20 @@ impl Bridge {
             if !state.sendable().is_empty() {
                 self.interrupt.store(true, Ordering::Relaxed);
             }
+        });
+    }
+
+    /// Turns on or off putting the display out each time the unit starts. Turning it on while the
+    /// unit runs with a lit display puts it out now.
+    pub fn set_keep_display_off(&self, enabled: bool) {
+        self.update(|state| {
+            state.keep_display_off = enabled;
+            let lit = state.confirmed.as_ref().is_some_and(|device| device["ligado"] == true && device["display"] == "on");
+            if enabled && lit && state.account.connected() && !state.demo {
+                put(&mut state.pending, "display", json!("off"));
+                state.flush_at = Some(Instant::now());
+            }
+            state.next_poll = state.next_poll.min(Instant::now() + state.poll_interval());
         });
     }
 
@@ -547,6 +588,43 @@ mod tests {
                 return view;
             }
         }
+    }
+
+    /// A unit whose power the test flips, as if from the remote, recording the commands it gets.
+    struct Remote {
+        on: Arc<Mutex<bool>>,
+        commands: Arc<Mutex<Vec<Changes>>>,
+    }
+
+    impl Unit for Remote {
+        fn run(&mut self, changes: &[(String, Value)]) -> Result<Outcome, Failure> {
+            if !changes.is_empty() {
+                self.commands.lock().unwrap().push(changes.to_vec());
+            }
+            let on = *self.on.lock().unwrap();
+            Ok(Outcome { device: json!({ "ligado": on, "display": "on" }).as_object().unwrap().clone(), pending: vec![] })
+        }
+    }
+
+    #[test]
+    fn puts_the_display_out_when_the_unit_starts() {
+        let on = Arc::new(Mutex::new(false));
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let unit = Remote { on: Arc::clone(&on), commands: Arc::clone(&commands) };
+        let (sender, views) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let bridge = Bridge::start(Box::new(unit), Box::new(move |view| drop(sender.lock().unwrap().send(view.clone()))));
+        bridge.set_keep_display_off(true);
+        wait_for(&views, "ready");
+        assert!(commands.lock().unwrap().is_empty(), "nada a apagar com o ar desligado");
+        // Started from the remote: the next reading sees it on with the display lit.
+        *on.lock().unwrap() = true;
+        bridge.refresh();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < deadline && commands.lock().unwrap().is_empty() {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(commands.lock().unwrap().first(), Some(&vec![("display".to_owned(), json!("off"))]));
     }
 
     #[test]

@@ -49,6 +49,20 @@ pub fn set_local_enabled(file: &Path, enabled: bool) {
     }
 }
 
+/// Whether to turn the display off again each time the unit starts. The unit does not keep that
+/// setting across power cycles, unlike the beep. Off by default.
+pub fn keep_display_off(file: &Path) -> bool {
+    read(file)["manterDisplayApagado"].as_bool().unwrap_or(false)
+}
+
+pub fn set_keep_display_off(file: &Path, enabled: bool) {
+    let mut settings = read(file);
+    settings["manterDisplayApagado"] = json!(enabled);
+    if let Err(error) = fs::write(file, settings.to_string()) {
+        eprintln!("não deu para salvar o display apagado: {error}");
+    }
+}
+
 /// The unit's address on the network, as "host:porta", once one was found and chosen.
 pub fn local_addr(file: &Path) -> Option<String> {
     read(file)["local"]["endereco"].as_str().map(str::to_owned)
