@@ -51,18 +51,45 @@ fn supported(table: &[(&str, &str)], rep: &Value) -> Value {
     json!(mapped)
 }
 
-/// Reads the whole collection in one batch and builds the same device shape the cloud path returns.
+/// The resources the panel needs, the ones that change most first. Each is a small read of about
+/// 30 to 110 ms, so a waiting click never sits behind more than one of them.
+const RESOURCES: [&str; 10] = [
+    "/power/vs/0",
+    "/temperatures/vs/0",
+    "/mode/vs/0",
+    "/wind/strength/vs/0",
+    "/wind/direction/vs/0",
+    "/mode/convenient/vs/0",
+    "/energy/consumption/vs/0",
+    "/humidity/vs/0",
+    "/filter/airdustfilter/vs/0",
+    "/option/autoclean/vs/0",
+];
+/// Only for the unit's serial number, which does not change, so it is read once.
+const IDENTITY: &str = "/information/vs/0";
+
+/// Reads the unit and builds the same device shape the cloud path returns.
+#[cfg(test)]
 pub fn read(link: &mut Link) -> Result<Device, String> {
-    let response = link.get("/device/0?if=oic.if.b")?;
-    if !response.ok() {
-        return Err(format!("o ar respondeu {}.{:02} ao ler", response.code >> 5, response.code & 31));
-    }
-    let items = response.body.as_array().ok_or("resposta do ar fora do formato")?;
+    read_until(link, true, &|| false).map(|device| device.expect("never stopped"))
+}
+
+/// Like `read`, but gives up between resources when `stop` turns true (None), so a waiting click
+/// goes first. `with_identity` also reads the serial number for the device id.
+pub fn read_until(link: &mut Link, with_identity: bool, stop: &dyn Fn() -> bool) -> Result<Option<Device>, String> {
     let mut reps: Map<String, Value> = Map::new();
-    for item in items {
-        if let (Some(href), Some(rep)) = (item.get("href").and_then(Value::as_str), item.get("rep")) {
-            reps.insert(href.to_owned(), rep.clone());
+    let identity = with_identity.then_some(IDENTITY);
+    for href in RESOURCES.into_iter().chain(identity) {
+        let Some(response) = link.get_until(href, stop)? else {
+            return Ok(None);
+        };
+        // A resource this unit does not have answers 4.04; its fields stay empty.
+        if response.ok() {
+            reps.insert(href.to_owned(), response.body);
         }
+    }
+    if !reps.contains_key("/power/vs/0") {
+        return Err("o ar não informou se está ligado".into());
     }
     let rep = |href: &str| reps.get(href).cloned().unwrap_or(Value::Null);
 
@@ -131,7 +158,7 @@ pub fn read(link: &mut Link) -> Result<Device, String> {
         device.insert("id".into(), json!(serial));
     }
     device.insert("nome".into(), json!("Ar-condicionado"));
-    Ok(device)
+    Ok(Some(device))
 }
 
 fn temp_from(temp_item: &Value, current: &Value) -> Value {
@@ -343,6 +370,85 @@ mod tests {
         }
         let (path, body) = write_for("temp", &json!(start)).unwrap();
         assert!(link.post(&path, &body).unwrap().ok());
+    }
+
+    // Where the time goes: full batch read vs small reads vs a write vs a fresh handshake.
+    // cargo test local_timing -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn local_timing() {
+        let addr: SocketAddr = std::env::var("AR_TRAY_LOCAL").expect("defina AR_TRAY_LOCAL=host:porta").parse().unwrap();
+        let identity = Identity::new().unwrap();
+        let began = std::time::Instant::now();
+        let mut link = Link::open(addr, &identity).unwrap();
+        println!("handshake: {} ms", began.elapsed().as_millis());
+        for round in 0..3 {
+            let began = std::time::Instant::now();
+            read(&mut link).unwrap();
+            println!("leitura completa (lote) #{round}: {} ms", began.elapsed().as_millis());
+        }
+        for path in ["/power/vs/0", "/temperatures/vs/0", "/mode/vs/0", "/wind/strength/vs/0", "/energy/consumption/vs/0"] {
+            let began = std::time::Instant::now();
+            let response = link.get(path).unwrap();
+            println!("GET {path}: {}.{:02} em {} ms", response.code >> 5, response.code & 31, began.elapsed().as_millis());
+        }
+        let current = before_temp(&mut link);
+        for _ in 0..3 {
+            let (path, body) = write_for("temp", &json!(current)).unwrap();
+            let began = std::time::Instant::now();
+            link.post(&path, &body).unwrap();
+            println!("POST temp (mesmo valor): {} ms", began.elapsed().as_millis());
+        }
+    }
+
+    // A click during a full read: how long until the read steps aside, then the command's time.
+    // cargo test local_preempt -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn local_preempt() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let addr: SocketAddr = std::env::var("AR_TRAY_LOCAL").expect("defina AR_TRAY_LOCAL=host:porta").parse().unwrap();
+        let identity = Identity::new().unwrap();
+        let mut link = Link::open(addr, &identity).unwrap();
+        let current = before_temp(&mut link);
+        let clicked = Arc::new(AtomicBool::new(false));
+        let raiser = Arc::clone(&clicked);
+        let began = std::time::Instant::now();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            raiser.store(true, Ordering::Relaxed);
+        });
+        let flag = Arc::clone(&clicked);
+        let result = read_until(&mut link, false, &move || flag.load(Ordering::Relaxed)).unwrap();
+        let stepped_aside = began.elapsed().as_millis();
+        let (path, body) = write_for("temp", &json!(current)).unwrap();
+        let sent = std::time::Instant::now();
+        assert!(link.post(&path, &body).unwrap().ok());
+        println!(
+            "leitura {} após {stepped_aside} ms (clique aos 100 ms); comando em {} ms; clique até o ar: {} ms",
+            if result.is_none() { "cedeu a vez" } else { "terminou" },
+            sent.elapsed().as_millis(),
+            began.elapsed().as_millis() - 100,
+        );
+        assert!(result.is_none(), "a leitura deveria ceder a vez ao clique");
+    }
+
+    // Does a session survive being idle? cargo test local_idle -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn local_idle() {
+        let addr: SocketAddr = std::env::var("AR_TRAY_LOCAL").expect("defina AR_TRAY_LOCAL=host:porta").parse().unwrap();
+        let idle: u64 = std::env::var("AR_TRAY_IDLE").ok().and_then(|text| text.parse().ok()).unwrap_or(65);
+        let identity = Identity::new().unwrap();
+        let mut link = Link::open(addr, &identity).unwrap();
+        link.get("/power/vs/0").unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(idle));
+        let began = std::time::Instant::now();
+        match link.get("/power/vs/0") {
+            Ok(response) => println!("depois de {idle} s parado: {}.{:02} em {} ms", response.code >> 5, response.code & 31, began.elapsed().as_millis()),
+            Err(error) => println!("depois de {idle} s parado: falhou em {} ms ({error})", began.elapsed().as_millis()),
+        }
     }
 
     fn before_temp(link: &mut Link) -> i64 {

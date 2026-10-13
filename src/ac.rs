@@ -4,6 +4,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -76,6 +77,9 @@ pub trait Unit: Send {
     fn is_demo(&self) -> bool {
         false
     }
+
+    /// A flag the queue raises when a command is waiting, so a long refresh can step aside.
+    fn set_interrupt(&mut self, _flag: Arc<AtomicBool>) {}
 
     /// Turns the home-network path on or off.
     fn set_local(&mut self, _enabled: bool) {}
@@ -403,6 +407,8 @@ pub struct HybridUnit {
     /// The last full read, so a command returns at once with the change applied instead of waiting
     /// on another heavy read.
     last_device: Option<Device>,
+    /// Raised by the queue when a click is waiting.
+    interrupt: Option<Arc<AtomicBool>>,
     cooldown_until: Option<Instant>,
 }
 
@@ -417,7 +423,7 @@ impl HybridUnit {
                 (None, "Não deu para preparar o controle local".to_owned())
             }
         };
-        Self { cloud, settings, identity, enabled, addr, session: None, units: Vec::new(), status, via: "", last_device: None, cooldown_until: None }
+        Self { cloud, settings, identity, enabled, addr, session: None, units: Vec::new(), status, via: "", last_device: None, interrupt: None, cooldown_until: None }
     }
 
     fn can_do_locally(&self, changes: &[(String, Value)]) -> bool {
@@ -449,38 +455,56 @@ impl HybridUnit {
         Ok(self.session.as_mut().unwrap())
     }
 
-    fn read_local(&mut self) -> Result<Device, String> {
+    /// Reads the whole unit. Once there is a first reading, the read steps aside (None) as soon as a
+    /// click is waiting, so the command goes first.
+    fn read_local(&mut self) -> Result<Option<Device>, String> {
         // Keep the SmartThings label and id when an account is connected; otherwise the unit's own
         // identity (set by localac::read) is enough, so no login is needed.
         let chosen = self.cloud.chosen();
+        let interrupt = self.interrupt.clone().filter(|_| self.last_device.is_some());
+        let stop = move || interrupt.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed));
+        // The serial number never changes, so it is read once and carried over.
+        let known_id = self.last_device.as_ref().and_then(|device| device.get("id")).filter(|id| id.is_string()).cloned();
         let link = self.open()?;
-        let mut state = localac::read(link)?;
+        let Some(mut state) = localac::read_until(link, known_id.is_none(), &stop)? else {
+            return Ok(None);
+        };
+        if let Some(id) = known_id {
+            state.insert("id".into(), id);
+        }
         if let Some((id, nome)) = chosen {
             state.insert("id".into(), json!(id));
             state.insert("nome".into(), json!(nome));
         }
         self.last_device = Some(state.clone());
-        Ok(state)
+        Ok(Some(state))
     }
 
     fn local_run(&mut self, changes: &[(String, Value)]) -> Result<Outcome, String> {
         // A plain refresh reads the whole unit; a command only sends and trusts the unit's reply, so
         // it returns at once and does not block the next click on a heavy read.
         if changes.is_empty() {
-            let device = self.read_local()?;
+            // A session the unit dropped (after the PC slept, say) is reopened once before giving up.
+            let read = match self.read_local() {
+                Ok(read) => read,
+                Err(error) => {
+                    log::line(format_args!("local: {error}; reabrindo a sessão"));
+                    self.session = None;
+                    self.read_local().map_err(|_| error)?
+                }
+            };
+            let device = match read {
+                Some(device) => device,
+                // A click is waiting: hand back the last reading so the command goes right away.
+                None => self.last_device.clone().ok_or("ainda sem leitura do ar")?,
+            };
             return Ok(Outcome { device, pending: vec![] });
         }
         let ordered = order(changes);
-        {
-            let link = self.open()?;
-            for (key, value) in &ordered {
-                let (path, body) = localac::write_for(key, value).ok_or_else(|| format!("sem caminho local para {key}"))?;
-                let response = link.post(&path, &body)?;
-                // The unit answers 2.04 Changed when it takes the command; anything else is a refusal.
-                if !response.ok() {
-                    return Err(format!("o ar recusou {key}"));
-                }
-            }
+        if let Err(error) = self.send_all(&ordered) {
+            log::line(format_args!("local: {error}; reabrindo a sessão"));
+            self.session = None;
+            self.send_all(&ordered).map_err(|_| error)?;
         }
         // Apply the accepted changes onto the last known state. The next refresh reconciles the rest.
         let mut device = self.last_device.clone().ok_or("ainda sem leitura do ar")?;
@@ -489,6 +513,20 @@ impl HybridUnit {
         }
         self.last_device = Some(device.clone());
         Ok(Outcome { device, pending: vec![] })
+    }
+
+    /// Sends each change in order. The unit answers 2.04 Changed when it takes a command; anything
+    /// else is a refusal. Every write sets an absolute value, so sending the batch again is safe.
+    fn send_all(&mut self, ordered: &[(String, Value)]) -> Result<(), String> {
+        let link = self.open()?;
+        for (key, value) in ordered {
+            let (path, body) = localac::write_for(key, value).ok_or_else(|| format!("sem caminho local para {key}"))?;
+            let response = link.post(&path, &body)?;
+            if !response.ok() {
+                return Err(format!("o ar recusou {key}"));
+            }
+        }
+        Ok(())
     }
 
     fn try_discover(&mut self) {
@@ -561,6 +599,10 @@ impl Unit for HybridUnit {
 
     fn logout(&mut self) {
         self.cloud.logout();
+    }
+
+    fn set_interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt = Some(flag);
     }
 
     fn set_local(&mut self, enabled: bool) {

@@ -1,5 +1,6 @@
 //! Command queue between the panel and the unit. Quick clicks merge into one command.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,7 +11,9 @@ use crate::ac::{Changes, Device, Failure, Outcome, Unit};
 use crate::log;
 use crate::smartthings::LoginControl;
 
-const FLUSH_DELAY: Duration = Duration::from_millis(150);
+/// A click goes out at once. Quick clicks still merge: the ones that land while a command is on its
+/// way wait in the queue and leave together when it returns.
+const FLUSH_DELAY: Duration = Duration::ZERO;
 const POLL_VISIBLE: Duration = Duration::from_secs(15);
 const POLL_HIDDEN: Duration = Duration::from_secs(60);
 const STALE_AFTER: Duration = Duration::from_secs(5);
@@ -206,11 +209,15 @@ pub struct Bridge {
     wake: Condvar,
     publish: Publish,
     login: Option<Arc<LoginControl>>,
+    /// Raised while a command waits, so a refresh in progress steps aside.
+    interrupt: Arc<AtomicBool>,
 }
 
 impl Bridge {
     /// Starts the worker thread, which refreshes right away.
-    pub fn start(unit: Box<dyn Unit>, publish: Publish) -> Arc<Self> {
+    pub fn start(mut unit: Box<dyn Unit>, publish: Publish) -> Arc<Self> {
+        let interrupt = Arc::new(AtomicBool::new(false));
+        unit.set_interrupt(Arc::clone(&interrupt));
         let bridge = Arc::new(Self {
             state: Mutex::new(State {
                 confirmed: None,
@@ -234,6 +241,7 @@ impl Bridge {
             wake: Condvar::new(),
             publish,
             login: unit.login_control(),
+            interrupt,
         });
         let worker = Arc::clone(&bridge);
         thread::spawn(move || worker.work(unit));
@@ -272,6 +280,9 @@ impl Bridge {
             }
             state.error = Value::Null;
             state.flush_at = Some(Instant::now() + FLUSH_DELAY);
+            if !state.sendable().is_empty() {
+                self.interrupt.store(true, Ordering::Relaxed);
+            }
         });
     }
 
@@ -373,6 +384,7 @@ impl Bridge {
                 if !changes.is_empty() {
                     state.pending.retain(|(key, _)| !has(&changes, key));
                     state.inflight = changes.clone();
+                    self.interrupt.store(false, Ordering::Relaxed);
                     state.run = Run::Command;
                     return Job::Run(changes);
                 }
@@ -380,6 +392,7 @@ impl Bridge {
             // Without a connected account there is nothing to poll until the panel asks.
             if state.refresh_wanted || (state.account.connected() && now >= state.next_poll) {
                 state.refresh_wanted = false;
+                self.interrupt.store(false, Ordering::Relaxed);
                 state.run = Run::Refresh;
                 return Job::Run(Vec::new());
             }

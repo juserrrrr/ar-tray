@@ -24,7 +24,9 @@ const CLOUD_UUID: &str = "ab0b0ac4-aae9-4958-a04d-8ec36fe1b2f9";
 /// Where the units seen so far open their secure port. It can move when the unit restarts.
 pub const USUAL_PORTS: std::ops::RangeInclusive<u16> = 49152..=49160;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const ANSWER_TIMEOUT: Duration = Duration::from_millis(3500);
+/// With a resend every 400 ms, no answer in 2 s means the session is gone and is worth reopening.
+const ANSWER_TIMEOUT: Duration = Duration::from_millis(2000);
+const RESEND_EVERY: Duration = Duration::from_millis(400);
 
 // CoAP constants.
 const CONFIRMABLE: u8 = 0;
@@ -161,20 +163,29 @@ impl Link {
     }
 
     pub fn get(&mut self, path: &str) -> Result<Response, String> {
-        self.request(GET, path, None)
+        self.request(GET, path, None, &|| false).map(|response| response.expect("never stopped"))
+    }
+
+    /// A GET that gives up between blocks when `stop` turns true, so a click does not wait for a
+    /// long read to finish. None means it stopped.
+    pub fn get_until(&mut self, path: &str, stop: &dyn Fn() -> bool) -> Result<Option<Response>, String> {
+        self.request(GET, path, None, stop)
     }
 
     pub fn post(&mut self, path: &str, body: &Value) -> Result<Response, String> {
-        self.request(POST, path, Some(cbor::encode(body)))
+        self.request(POST, path, Some(cbor::encode(body)), &|| false).map(|response| response.expect("never stopped"))
     }
 
-    fn request(&mut self, method: u8, path: &str, body: Option<Vec<u8>>) -> Result<Response, String> {
+    fn request(&mut self, method: u8, path: &str, body: Option<Vec<u8>>, stop: &dyn Fn() -> bool) -> Result<Option<Response>, String> {
         self.token = self.token.wrapping_add(1);
         let token = self.token.to_be_bytes();
         let mut payload = Vec::new();
         let code;
         let mut want_block = 0u32;
         loop {
+            if stop() {
+                return Ok(None);
+            }
             self.message_id = self.message_id.wrapping_add(1);
             let request = encode_request(Request {
                 method,
@@ -197,31 +208,34 @@ impl Link {
             }
         }
         let body = if payload.is_empty() { Value::Null } else { cbor::decode(&payload)? };
-        Ok(Response { code, body })
+        Ok(Some(Response { code, body }))
     }
 
-    /// Sends one datagram and waits for the ACK carrying our token, resending once halfway through.
+    /// Sends one datagram and waits for the ACK carrying our token. On the home network an answer
+    /// takes about 100 ms, so a lost packet is sent again every RESEND_EVERY instead of waiting
+    /// seconds. The copy keeps its message id, and every write sets an absolute value, so a repeat
+    /// changes nothing.
     fn exchange(&mut self, datagram: &[u8], token: &[u8]) -> Result<Answer, String> {
         self.endpoint.write(Instant::now(), self.remote, datagram).map_err(|error| error.to_string())?;
         self.drain_transmit()?;
         let deadline = Instant::now() + ANSWER_TIMEOUT;
-        let resend_at = Instant::now() + ANSWER_TIMEOUT / 2;
-        let mut resent = false;
+        let mut resend_at = Instant::now() + RESEND_EVERY;
         loop {
             while let Some(data) = self.received.pop() {
                 if let Some(answer) = parse_answer(&data, token) {
                     return Ok(answer);
                 }
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 return Err(format!("o ar {} não respondeu", self.remote));
             }
-            if !resent && Instant::now() >= resend_at {
-                self.endpoint.write(Instant::now(), self.remote, datagram).map_err(|error| error.to_string())?;
+            if now >= resend_at {
+                self.endpoint.write(now, self.remote, datagram).map_err(|error| error.to_string())?;
                 self.drain_transmit()?;
-                resent = true;
+                resend_at = now + RESEND_EVERY;
             }
-            self.pump(deadline)?;
+            self.pump(resend_at.min(deadline))?;
         }
     }
 }
