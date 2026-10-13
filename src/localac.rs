@@ -144,7 +144,7 @@ pub fn read_until(link: &mut Link, with_identity: bool, stop: &dyn Fn() -> bool)
         ("potenciaFim", json!(now)),
         ("energia", lifetime),
         ("ambiente", temp_from(&temp_item, &rep("/temperature/current/0"))),
-        ("umidade", text(&humidity, "x.com.samsung.da.humidity").map_or(Value::Null, |v| integer(&v))),
+        ("umidade", humidity_from(&humidity)),
         ("modos", supported(&MODES, &mode)),
         ("ventos", supported(&FANS, &wind)),
         ("oscilacoes", supported(&SWINGS, &direction)),
@@ -159,6 +159,17 @@ pub fn read_until(link: &mut Link, with_identity: bool, stop: &dyn Fn() -> bool)
     }
     device.insert("nome".into(), json!("Ar-condicionado"));
     Ok(Some(device))
+}
+
+/// The room humidity. These units leave `humidity` at "0" and report the reading, rounded to 5%, in
+/// `fivepercentHumidity`, the same number SmartThings shows. A zero means no reading.
+fn humidity_from(rep: &Value) -> Value {
+    ["x.com.samsung.da.fivepercentHumidity", "x.com.samsung.da.humidity"]
+        .into_iter()
+        .filter_map(|key| text(rep, key))
+        .map(|value| integer(&value))
+        .find(|value| value.as_i64().is_some_and(|percent| percent > 0))
+        .unwrap_or(Value::Null)
 }
 
 fn temp_from(temp_item: &Value, current: &Value) -> Value {
@@ -316,6 +327,15 @@ mod tests {
     }
 
     #[test]
+    fn humidity_comes_from_the_five_percent_reading() {
+        let rep = json!({ "x.com.samsung.da.humidity": "0", "x.com.samsung.da.fivepercentHumidity": "65" });
+        assert_eq!(humidity_from(&rep), json!(65));
+        // No reading at all shows as empty, not 0%.
+        assert_eq!(humidity_from(&json!({ "x.com.samsung.da.humidity": "0", "x.com.samsung.da.fivepercentHumidity": "0" })), Value::Null);
+        assert_eq!(humidity_from(&Value::Null), Value::Null);
+    }
+
+    #[test]
     fn client_hello_is_a_dtls_record() {
         let hello = client_hello();
         assert_eq!(&hello[..3], &[0x16, 0xfe, 0xfd]);
@@ -331,8 +351,8 @@ mod tests {
         let identity = Identity::new().unwrap();
         let mut link = Link::open(addr, &identity).unwrap();
         let before = read(&mut link).unwrap();
-        println!("lido: ligado={} temp={} modo={} vento={} extra={} ambiente={}",
-            before["ligado"], before["temp"], before["modo"], before["vento"], before["extra"], before["ambiente"]);
+        println!("lido: ligado={} temp={} modo={} vento={} extra={} ambiente={} umidade={}",
+            before["ligado"], before["temp"], before["modo"], before["vento"], before["extra"], before["ambiente"], before["umidade"]);
         assert!(before["modos"].as_array().is_some_and(|modes| !modes.is_empty()));
         let original = before["temp"].as_i64().expect("o ar deve informar a temperatura");
         let target = if original >= 24 { original - 1 } else { original + 1 };
