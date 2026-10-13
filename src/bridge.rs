@@ -155,6 +155,9 @@ impl State {
 
     fn finish_run(&mut self, result: Result<Outcome, Failure>) {
         let now = Instant::now();
+        // A command returns at once with the change applied; reconcile the full state soon after,
+        // without blocking the click, instead of waiting out the whole poll interval.
+        let was_command = !self.inflight.is_empty();
         self.inflight.clear();
         match result {
             Ok(outcome) => {
@@ -191,7 +194,8 @@ impl State {
         if self.account.connected() && !self.sendable().is_empty() {
             self.flush_at = Some(now + FLUSH_DELAY);
         }
-        self.next_poll = now + self.poll_interval();
+        let reconcile = Duration::from_millis(1500);
+        self.next_poll = now + if was_command && self.account.connected() { reconcile.min(self.poll_interval()) } else { self.poll_interval() };
     }
 }
 

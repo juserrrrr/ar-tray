@@ -384,8 +384,6 @@ fn order(changes: &[(String, Value)]) -> Vec<(String, Value)> {
     ordered
 }
 
-const LOCAL_CONFIRM: usize = 2;
-const LOCAL_CONFIRM_WAIT: Duration = Duration::from_millis(250);
 const DISCOVERY_COOLDOWN: Duration = Duration::from_secs(45);
 
 /// Controls the unit over the home network when it can, and through SmartThings otherwise. The
@@ -402,6 +400,9 @@ pub struct HybridUnit {
     status: String,
     /// Which path the last run used, for the panel: "rede" or "nuvem".
     via: &'static str,
+    /// The last full read, so a command returns at once with the change applied instead of waiting
+    /// on another heavy read.
+    last_device: Option<Device>,
     cooldown_until: Option<Instant>,
 }
 
@@ -416,7 +417,7 @@ impl HybridUnit {
                 (None, "Não deu para preparar o controle local".to_owned())
             }
         };
-        Self { cloud, settings, identity, enabled, addr, session: None, units: Vec::new(), status, via: "", cooldown_until: None }
+        Self { cloud, settings, identity, enabled, addr, session: None, units: Vec::new(), status, via: "", last_device: None, cooldown_until: None }
     }
 
     fn can_do_locally(&self, changes: &[(String, Value)]) -> bool {
@@ -458,31 +459,36 @@ impl HybridUnit {
             state.insert("id".into(), json!(id));
             state.insert("nome".into(), json!(nome));
         }
+        self.last_device = Some(state.clone());
         Ok(state)
     }
 
     fn local_run(&mut self, changes: &[(String, Value)]) -> Result<Outcome, String> {
+        // A plain refresh reads the whole unit; a command only sends and trusts the unit's reply, so
+        // it returns at once and does not block the next click on a heavy read.
+        if changes.is_empty() {
+            let device = self.read_local()?;
+            return Ok(Outcome { device, pending: vec![] });
+        }
         let ordered = order(changes);
         {
             let link = self.open()?;
             for (key, value) in &ordered {
                 let (path, body) = localac::write_for(key, value).ok_or_else(|| format!("sem caminho local para {key}"))?;
                 let response = link.post(&path, &body)?;
+                // The unit answers 2.04 Changed when it takes the command; anything else is a refusal.
                 if !response.ok() {
                     return Err(format!("o ar recusou {key}"));
                 }
             }
         }
-        let mut state = self.read_local()?;
-        for _ in 1..LOCAL_CONFIRM {
-            if unconfirmed(changes, &state).is_empty() {
-                break;
-            }
-            sleep(LOCAL_CONFIRM_WAIT);
-            state = self.read_local()?;
+        // Apply the accepted changes onto the last known state. The next refresh reconciles the rest.
+        let mut device = self.last_device.clone().ok_or("ainda sem leitura do ar")?;
+        for (key, value) in changes {
+            device.insert(key.clone(), value.clone());
         }
-        let pending = unconfirmed(changes, &state);
-        Ok(Outcome { device: state, pending })
+        self.last_device = Some(device.clone());
+        Ok(Outcome { device, pending: vec![] })
     }
 
     fn try_discover(&mut self) {

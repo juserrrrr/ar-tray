@@ -325,6 +325,30 @@ mod tests {
         assert!(link.post(&path, &body).unwrap().ok());
     }
 
+    // Times several commands in a row, to check they stay quick: cargo test local_rapid -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn local_rapid() {
+        let addr: SocketAddr = std::env::var("AR_TRAY_LOCAL").expect("defina AR_TRAY_LOCAL=host:porta").parse().unwrap();
+        let identity = Identity::new().unwrap();
+        let mut link = Link::open(addr, &identity).unwrap();
+        let start = before_temp(&mut link);
+        for step in 0..5 {
+            let target = 20 + step;
+            let (path, body) = write_for("temp", &json!(target)).unwrap();
+            let began = std::time::Instant::now();
+            let response = link.post(&path, &body).unwrap();
+            println!("comando {target} °C: {}.{:02} em {} ms", response.code >> 5, response.code & 31, began.elapsed().as_millis());
+            assert!(response.ok());
+        }
+        let (path, body) = write_for("temp", &json!(start)).unwrap();
+        assert!(link.post(&path, &body).unwrap().ok());
+    }
+
+    fn before_temp(link: &mut Link) -> i64 {
+        read(link).unwrap()["temp"].as_i64().unwrap_or(23)
+    }
+
     // Finds units on the LAN by itself: cargo test local_discover -- --ignored --nocapture
     #[test]
     #[ignore]
